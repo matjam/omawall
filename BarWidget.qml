@@ -42,7 +42,18 @@ Panel {
   // toggle is off.
   property string editing: ""
 
-  readonly property string editingKey: perDisplayConfig && editing !== "" ? editing : "all"
+  // Must resolve exactly as editingTabLabel() does. `editing` stays empty until
+  // a display tab is actually clicked, and falling back to "all" here while the
+  // tab row already highlights the first display meant that a change made
+  // before any click landed on the shared entry rather than on the display
+  // shown as selected: the setting saved, the panel updated to match, and
+  // nothing happened on screen.
+  readonly property string editingKey: {
+    if (!perDisplayConfig) return "all"
+    var tabs = displayTabs()
+    if (editing !== "" && tabs.indexOf(editing) !== -1) return editing
+    return tabs.length ? tabs[0] : "all"
+  }
 
   // The same resolution the service performs, so the panel shows what is
   // actually in effect rather than what was last typed. Legacy top-level
