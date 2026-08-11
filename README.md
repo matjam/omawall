@@ -1,49 +1,28 @@
 # omawall
 
-A folder-backed wallpaper service for [Omarchy](https://omarchy.org) Quattro.
+Folder-backed wallpapers for [Omarchy](https://omarchy.org) Quattro. Every
+display gets its own image, and your whole desktop theme can follow it.
 
-> **All of the code in this plugin was written by Claude**, Anthropic's coding
-> agent. It has been tested on a real Omarchy Quattro system — per-display
-> shuffling, theme generation, undecodable files and the settings panel were
-> each exercised by hand against live hardware — but tested is not proven.
->
-> Omarchy plugins run unsandboxed inside your long-running shell process, with
-> your permissions and no isolation. Read the source before you install it.
-> There is no proof it won't delete your cat.
-
-Point it at a directory of images and every display gets its own random
-wallpaper, with an optional auto-shuffle timer and a bar widget to drive it.
-With no folder configured it behaves exactly like Omarchy's built-in
-background service, so you can install it and decide later.
+> **Written by Claude**, Anthropic's coding agent. Tested on real hardware, but
+> tested isn't proven — and Omarchy plugins run unsandboxed inside your shell
+> process, with your permissions. Read the source first. No promises about
+> your cat.
 
 ![omawall](preview.png)
 
-## What it does
+## Features
 
-- **Per-display wallpapers** — each monitor is dealt its own pick from the pool
-  instead of mirroring one image across all of them.
-- **Every image before any repeat** — picks come off one shuffled queue that is
-  reshuffled only when it empties, so a folder of 500 wallpapers shows all 500
-  before any comes round again. Sampling at random instead would leave roughly
-  a third of a folder unseen over the same number of shuffles while showing
-  others three or four times.
-- **Auto-shuffle** — reshuffle every _n_ seconds, or when you unlock the
-  session or dismiss the screensaver, or leave both off and shuffle by hand.
-- **Recursive scanning** — optionally include images nested below the chosen
-  folder. Picks up `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp` and `.webp`.
-- **Undecodable files are skipped** — a file too large for Qt's image
-  allocation limit, truncated, or misnamed is dropped from the pool the first
-  time it fails and the affected display is dealt another image instead. The
-  panel reports how many were skipped; a rescan retries them.
-- **Theme from wallpaper** — optionally derive an Omarchy theme from the image
-  on your primary display and switch to it, so the bar, terminal, editor and
-  everything else Omarchy themes follow the picture behind them. Needs
-  [matugen](#if-you-want-theme-generation); the rest of the plugin does not.
-- **Theme switches still work** — `omarchy theme set` keeps applying its color
-  payload and recoloring the bar. Only the choice of image is taken over.
-- **Bar widget** — a wallpaper icon that opens a settings panel: browse for a
-  folder, toggle the options, shuffle, rescan, and see which image landed on
-  which display. Middle-click the icon to shuffle without opening the panel.
+- **One image per display**, not the same one mirrored.
+- **Every image before any repeat** — picks come off a shuffled queue that only
+  reshuffles when it empties.
+- **Shuffle** on a timer, on unlock and screensaver exit, or by hand.
+- **Recursive scan** of `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp`.
+- **Skips files it can't decode** and re-deals that display.
+- **Theme from wallpaper** — recolors everything Omarchy themes. Needs matugen.
+- **Bar widget** for all of it. Middle-click the icon to shuffle.
+
+With no folder set it behaves like the built-in background service, so you can
+install it and decide later.
 
 ## Install
 
@@ -51,171 +30,107 @@ background service, so you can install it and decide later.
 omarchy plugin add https://github.com/matjam/omawall.git --enable
 ```
 
-That clones the repo into `~/.config/omarchy/plugins/matjam.omawall/`,
-validates it, and offers to place the bar widget. Answer the placement prompt
-with `right` (or wherever you want the icon).
+Put the widget on the `right` when prompted. This disables the built-in
+`omarchy.background` — they would fight over the wallpaper — and removing
+omawall restores it.
 
-Enabling omawall disables Omarchy's built-in `omarchy.background` service —
-the two would otherwise fight over the same wallpaper. Disabling omawall
-restores it.
-
-### If you want theme generation
-
-[Theme from wallpaper](#theme-from-wallpaper) needs **matugen**, which
-omawall does not install for you:
+**Theme generation needs [matugen](https://github.com/InioX/matugen), which
+omawall does not install for you:**
 
 ```bash
-sudo pacman -S matugen
+sudo pacman -S matugen    # Arch extra repo, no AUR helper needed
 ```
 
-It is in Arch's official `extra` repository, so no AUR helper is needed.
-Everything else — folder mode, per-display picks, auto-shuffle, the bar
-widget — works without it, and the settings panel tells you when it is
-missing rather than failing quietly. Install it whenever you want the
-feature; nothing needs reinstalling afterwards.
-
-matugen is GPL-2.0 and omawall is MIT. omawall only executes it as a
-separate process, so the two licenses stay independent.
-
-To update later:
+Everything else works without it, and the panel tells you when it's missing.
+Add it whenever; nothing needs reinstalling.
 
 ```bash
-omarchy plugin update matjam.omawall
+omarchy plugin update matjam.omawall    # update
+omarchy plugin remove matjam.omawall    # remove, leaves nothing behind
 ```
 
-## Uninstall
+## Settings
 
-```bash
-omarchy plugin remove matjam.omawall
-```
+Click the wallpaper icon in the bar.
 
-This disables the plugin, restores `omarchy.background`, and deletes
-`~/.config/omarchy/plugins/matjam.omawall/`. Nothing is left behind outside
-that directory; all settings live in your `~/.config/omarchy/shell.json`
-entry for the widget and are removed with it.
-
-## Usage
-
-Click the wallpaper icon in the bar to open the settings panel.
-
-| Setting | Default | Meaning |
+| Setting | Default | Does |
 | --- | --- | --- |
-| Wallpaper folder | _(empty)_ | Directory to draw images from. Empty means "use the current theme's backgrounds". |
-| Search subfolders | on | Scan recursively below the folder. |
-| Different image per display | on | Deal each monitor its own pick rather than mirroring one image. |
-| Auto-shuffle every | `0` | Seconds between automatic reshuffles. `0` disables it. |
-| Shuffle on unlock or wake | off | Change wallpaper on unlock or screensaver exit instead of on a timer. |
-| Generate theme from wallpaper | off | Rebuild the `omawall` theme on every wallpaper change. |
-| Primary display | _(automatic)_ | Output whose image drives the theme. Automatic uses the first connected display. |
-| Light theme | off | Generate a light palette instead of a dark one. |
+| Wallpaper folder | _empty_ | Where images come from. Empty = theme backgrounds. |
+| Search subfolders | on | Scan recursively. |
+| Different image per display | on | Off mirrors one image everywhere. |
+| Auto-shuffle every | `0` | Seconds. `0` is off. |
+| Shuffle on unlock or wake | off | Shuffle on unlock or screensaver exit. |
+| Generate theme from wallpaper | off | Rebuild the theme on every change. |
+| Primary display | _auto_ | Whose image drives the theme. |
+| Light theme | off | Light palette instead of dark. |
 
-Keyboard shortcuts while the panel is open:
-
-| Key | Action |
-| --- | --- |
-| `s` | Shuffle now |
-| `r` | Rescan the folder |
-| `b` | Browse for a folder |
-| `t` | Generate the theme now |
-
-### From the command line
+Keys while the panel is open: `s` shuffle · `r` rescan · `b` browse ·
+`t` generate theme
 
 ```bash
-omarchy-shell background shuffle        # reshuffle every display now
+omarchy-shell background shuffle        # reshuffle now
+omarchy-shell background generateTheme  # rebuild the theme
 omarchy-shell background rescan         # re-read the folder
-omarchy-shell background generateTheme  # rebuild the theme from the current wallpaper
-omarchy-shell background status         # JSON: pool size, current pick per screen, theme settings
-```
+omarchy-shell background status         # JSON state
 
-Handy as a Hyprland bind:
-
-```
+# hyprland bind
 bind = SUPER SHIFT, W, exec, omarchy-shell -q background shuffle
 ```
 
 ## Theme from wallpaper
 
-With **Generate theme from wallpaper** on, every wallpaper change derives a
-palette from the image on your primary display, writes it to
-`~/.config/omarchy/themes/omawall/colors.toml`, and applies it. Everything
-Omarchy themes follows: the bar, terminals, btop, neovim, the browser, VS Code.
+Derives a palette from the primary display's image, writes
+`~/.config/omarchy/themes/omawall/colors.toml`, and applies it — bar,
+terminals, btop, neovim, browser, VS Code. Leave the toggle off and press `t`
+to do it by hand instead.
 
-Leave the toggle off and press `t` (or run `omarchy-shell background
-generateTheme`) to refresh the palette by hand instead, keeping it fixed while
-wallpapers continue to shuffle.
+Your wallpaper is never touched: the theme is applied with
+`OMARCHY_THEME_SKIP_BACKGROUND=1`, which also stops a shuffle triggering a
+theme triggering another shuffle. While the toggle is on, switching to another
+theme won't stick.
 
-The wallpaper is never changed by this. The theme is applied with
-`OMARCHY_THEME_SKIP_BACKGROUND=1`, the same way `omarchy-theme-refresh` does it
-— which is what keeps a shuffle from triggering a theme change that triggers
-another shuffle.
+**It stalls the session for a moment.** `omarchy-theme-set` retints every
+themed app, and the compositor stops accepting input while it does — the
+pointer freezes, and a held key can repeat. That's the cost of any Omarchy
+theme change; omawall just triggers it more often. So don't pair it with a
+short interval. Either turn on **Shuffle on unlock or wake** and set the
+interval to `0`, or keep the interval and generate by hand. If you game,
+prefer neither.
 
-Switching to any other theme turns the result off in practice: the next
-generation switches straight back to `omawall`. Turn the toggle off first if
-you want to pick a theme and keep it.
+<details>
+<summary><b>How the palette is built</b></summary>
 
-### It stalls the session for a moment
+matugen supplies Material You tonal palettes. Its surface and on-surface tiers
+become Omarchy's background and foreground ramps, and its primary the accent.
 
-Applying a theme is not free. `omarchy-theme-set` retints every app Omarchy
-themes — terminals, btop, the browser, the editor — and while that runs the
-compositor stops accepting input for a beat. The pointer stops, and a key held
-down at the wrong moment can repeat. This is what any Omarchy theme change
-costs; omawall just triggers it more often than you would by hand.
+The eight ANSI colors can't come from matugen: Material harmonises a scheme
+around one seed hue, so its base16 output is a monochrome ramp — every "color"
+a different lightness of the same hue — and a terminal needs red to be red.
+Each is synthesised instead, starting at its canonical hue, nudged up to 15°
+toward the image's hue, at a saturation taken from the image and clamped to a
+band so a near-grey wallpaper still gives colors you can tell apart. The
+mapping is [`bin/omawall-colors.jq`](bin/omawall-colors.jq).
 
-That makes a short auto-shuffle interval a poor pairing. Two better options:
-
-- **Turn on "Shuffle on unlock or wake"** and set the interval to `0`. The
-  wallpaper then changes when you come back to the session, which is where a
-  pause costs nothing and a new wallpaper is what you expect to see.
-- **Leave the interval on and turn theme generation off**, refreshing the
-  palette by hand with `t` when it suits you.
-
-If you game, read the freeze as a dropped frame or two, and prefer the first
-option or none at all.
-
-### How the palette is built
-
-[matugen](https://github.com/InioX/matugen) extracts Material You tonal
-palettes from the image. Its surface and on-surface tiers map directly onto
-Omarchy's background and foreground ramps, and its primary becomes the accent.
-
-The eight ANSI colors cannot come from matugen. Material You harmonises a whole
-scheme around one seed hue, so its base16 output is a monochrome ramp — every
-"color" a different lightness of the same hue. A terminal needs red to be red.
-So those are synthesised: each starts at its canonical hue, is nudged up to 15°
-toward the image's hue (the same harmonisation Material applies to custom
-colors), and is rendered at a saturation taken from the image and held inside a
-band, so a near-grey wallpaper still yields colors you can tell apart. The
-mapping lives in [`bin/omawall-colors.jq`](bin/omawall-colors.jq).
-
-You can run the generator directly:
+Run the generator directly:
 
 ```bash
-bin/omawall-generate-theme --image ~/Pictures/wall.jpg --mode dark
-bin/omawall-generate-theme --image ~/Pictures/wall.jpg --no-apply  # write only
+bin/omawall-generate-theme --image ~/Pictures/wall.jpg --mode dark [--no-apply]
 ```
+
+</details>
 
 ## Requirements
 
-- Omarchy Quattro (the Quickshell-based `omarchy-shell`).
-- `zenity` — used only by the panel's **Browse…** button. Without it you can
-  still type or paste a path into the folder field. Omarchy ships it by
-  default.
-- `matugen` — required only for **Theme from wallpaper**, and not installed by
-  omawall. See [If you want theme generation](#if-you-want-theme-generation).
+Omarchy Quattro · `zenity` for the Browse button (ships with Omarchy) ·
+`matugen` for theme generation only.
 
-`jq` and `find` are used by the generator and ship with Omarchy. No network
-access, and nothing is written outside `~/.config/omarchy`.
+matugen is GPL-2.0 and omawall is MIT; omawall only executes it as a separate
+process, so the licenses stay independent. No network access, and nothing is
+written outside `~/.config/omarchy`.
 
 ## Credits
 
-Derived from Omarchy's built-in `omarchy.background` plugin
-([basecamp/omarchy](https://github.com/basecamp/omarchy), MIT) and extended
-with folder mode, per-display picks, auto-shuffle, theme generation, and the
-settings panel.
-
-The extensions were written by [Claude](https://claude.com/claude-code) —
-see the note at the top of this file.
-
-## License
+Extends Omarchy's built-in `omarchy.background`
+([basecamp/omarchy](https://github.com/basecamp/omarchy), MIT).
 
 MIT — see [LICENSE](LICENSE).
