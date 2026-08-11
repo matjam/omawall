@@ -2,6 +2,15 @@
 
 A folder-backed wallpaper service for [Omarchy](https://omarchy.org) Quattro.
 
+> **All of the code in this plugin was written by Claude**, Anthropic's coding
+> agent. It has been tested on a real Omarchy Quattro system — per-display
+> shuffling, theme generation, undecodable files and the settings panel were
+> each exercised by hand against live hardware — but tested is not proven.
+>
+> Omarchy plugins run unsandboxed inside your long-running shell process, with
+> your permissions and no isolation. Read the source before you install it.
+> There is no proof it won't delete your cat.
+
 Point it at a directory of images and every display gets its own random
 wallpaper, with an optional auto-shuffle timer and a bar widget to drive it.
 With no folder configured it behaves exactly like Omarchy's built-in
@@ -173,6 +182,9 @@ Derived from Omarchy's built-in `omarchy.background` plugin
 ([basecamp/omarchy](https://github.com/basecamp/omarchy), MIT) and extended
 with folder mode, per-display picks, auto-shuffle, theme generation, and the
 settings panel.
+
+The extensions were written by [Claude](https://claude.com/claude-code) —
+see the note at the top of this file.
 
 ## License
 
