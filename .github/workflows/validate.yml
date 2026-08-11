@@ -47,11 +47,24 @@ jobs:
       # A pin that is never revisited silently stops testing what Omarchy
       # actually enforces today. Downloaded to hash, never executed, so this
       # stays a warning rather than a reason to distrust the run.
+      #
+      # continue-on-error because this reports on the pin rather than checking
+      # the repository: an advisory step that can fail the build turns "the
+      # upstream validator moved" into "your pull request is broken", and a
+      # transient outage into the same. The checks that decide pass or fail are
+      # the two above.
       - name: Note if the pinned validator has moved on
         if: always()
+        continue-on-error: true
+        env:
+          # The API is 60 requests an hour unauthenticated, shared across every
+          # runner on the same address, so this is a 403 in CI more often than
+          # not. The workflow's own token lifts it to 1000 and needs no secret.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          head_sha=$(curl -fsSL "https://api.github.com/repos/basecamp/omarchy/commits/quattro" \
+          head_sha=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/basecamp/omarchy/commits/quattro" \
             | jq -r '.sha')
           if [[ $head_sha == "$OMARCHY_SHA" ]]; then
             echo "Validator pin is current ($OMARCHY_SHA)."
