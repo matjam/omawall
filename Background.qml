@@ -37,10 +37,81 @@ Item {
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omawall"
   readonly property var settings: lookupSettings(shell ? shell.shellConfig : null, pluginId)
 
-  readonly property string folder: expandHome(String(setting("folder", "")).trim())
-  readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
+
+  // ---------------------------------------------------- per-display config
+  //
+  // Each display can carry its own folder, mode and scaling, held under
+  // displayConfig keyed by output name. With perDisplayConfig off every
+  // display reads the shared "all" entry instead, so the two arrangements are
+  // one lookup rather than two code paths.
+  //
+  // Nothing migrates anything. A settings file written before this existed has
+  // folder and recursive at the top level, and the lookup falls back to them,
+  // so an install that never opens the panel keeps working and one that does
+  // is upgraded by the first edit.
+  readonly property bool perDisplayConfig: setting("perDisplayConfig", false) === true
+  readonly property var displayConfig: setting("displayConfig", null)
+
+  readonly property var defaultDisplayConfig: ({
+    folder: "", recursive: true, mode: "shuffle", pinned: "", scaling: "zoom"
+  })
+
+  function rawConfigFor(name) {
+    var dc = displayConfig
+    if (!dc || typeof dc !== "object") return null
+    var key = (perDisplayConfig && name) ? String(name) : "all"
+    if (dc[key] && typeof dc[key] === "object") return dc[key]
+    // A display plugged in after the others has no entry of its own yet;
+    // "all" is a better starting point than an empty folder.
+    if (dc.all && typeof dc.all === "object") return dc.all
+    return null
+  }
+
+  function configFor(name) {
+    var c = rawConfigFor(name)
+    var pick = function(key, legacy) {
+      if (c && c[key] !== undefined && c[key] !== null) return c[key]
+      return legacy
+    }
+    var mode = String(pick("mode", "shuffle"))
+    var scaling = String(pick("scaling", "zoom"))
+    return {
+      folder: expandHome(String(pick("folder", setting("folder", ""))).trim()),
+      recursive: pick("recursive", setting("recursive", true)) === true,
+      mode: mode === "single" ? "single" : "shuffle",
+      pinned: expandHome(String(pick("pinned", "")).trim()),
+      scaling: ["zoom", "fitHeight", "fitWidth", "actual"].indexOf(scaling) !== -1 ? scaling : "zoom"
+    }
+  }
+
+  // Displays sharing a folder share a pool and a deal queue: dealing them
+  // independently would let the same image land on both at once and would
+  // undo the guarantee that every image shows before any repeats.
+  // JSON rather than a delimiter: a folder path may contain any character, so
+  // there is no separator that could be split back out again safely.
+  function poolKeyFor(name) {
+    var c = configFor(name)
+    return c.folder === "" ? "" : JSON.stringify([c.folder, c.recursive])
+  }
+
+  function poolKeyFolder(key) { try { return JSON.parse(key)[0] } catch (e) { return "" } }
+  function poolKeyRecursive(key) { try { return JSON.parse(key)[1] === true } catch (e) { return true } }
+
+  function distinctPoolKeys() {
+    var names = screenNames()
+    var seen = ({})
+    var keys = []
+    for (var i = 0; i < names.length; i++) {
+      var k = poolKeyFor(names[i])
+      if (k === "" || seen[k]) continue
+      seen[k] = true
+      keys.push(k)
+    }
+    return keys
+  }
+
 
   // Theme generation. autoTheme drives it from every shuffle; the IPC command
   // below runs it once regardless, so the palette can be refreshed by hand
@@ -52,15 +123,27 @@ Item {
 
   // Stamped in by PluginRegistry; the generator script ships beside this file.
   readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
-  // Bindings may use folderMode freely. Imperative code must not: when the
-  // shell injects `shell` after construction, `folder` and `folderMode` both
-  // re-evaluate, and QML gives no ordering guarantee between a dependent
-  // binding and an onXChanged handler. A handler that read folderMode could
-  // therefore still see the pre-change value. hasFolder() reads the source.
-  readonly property bool folderMode: folder !== ""
+  // For the paths that still speak of a single folder -- the status IPC and
+  // the bar tooltip. The primary display's is the one a single-folder setup
+  // has anyway.
+  readonly property string folder: configFor(primaryScreenName()).folder
 
+  // Bindings may use folderMode freely. Imperative code must not: when the
+  // shell injects `shell` after construction this and its inputs all
+  // re-evaluate, and QML gives no ordering guarantee between a dependent
+  // binding and an onXChanged handler, so a handler reading it could still see
+  // the pre-change value. hasFolder() reads the settings directly.
+  readonly property bool folderMode: hasFolder()
+
+  // True when omawall owns the wallpaper on any display, whether that display
+  // shuffles a folder or is pinned to one image.
   function hasFolder() {
-    return String(folder || "") !== ""
+    var names = screenNames()
+    for (var i = 0; i < names.length; i++) {
+      var c = configFor(names[i])
+      if (c.folder !== "" || c.pinned !== "") return true
+    }
+    return false
   }
 
   function setting(name, fallback) {
@@ -159,7 +242,6 @@ Item {
 
   // ------------------------------------------------------------- image pool
 
-  property var pool: []
   property bool poolLoaded: false
 
   // Paths Qt refused to decode, kept as a set so each is only diagnosed once.
@@ -169,26 +251,68 @@ Item {
   // here as failures surface rather than up front.
   property var badImages: ({})
 
-  function usablePool() {
+  // poolKey -> [paths]. One entry per distinct folder in use, so two displays
+  // pointed at the same folder share both the pool and the deal queue below.
+  property var pools: ({})
+
+  function poolFor(key) { return pools[key] || [] }
+
+  function usablePoolFor(key) {
     var bad = badImages
-    return pool.filter(function(p) { return !bad[p] })
+    return poolFor(key).filter(function(p) { return !bad[p] })
   }
+
+  // Every usable image across every pool, for the status readout. Deduped:
+  // shared folders would otherwise be counted once per display using them.
+  function usablePool() {
+    var seen = ({})
+    var out = []
+    for (var key in pools) {
+      var list = usablePoolFor(key)
+      for (var i = 0; i < list.length; i++) {
+        if (seen[list[i]]) continue
+        seen[list[i]] = true
+        out.push(list[i])
+      }
+    }
+    return out
+  }
+
+  // Scans run one at a time through a single Process rather than one Process
+  // per folder: the count is driven by how many displays are configured
+  // differently, and a queue keeps that from becoming a fork storm.
+  property var scanQueue: []
+  property string scanningKey: ""
 
   function rescan() {
     // Clearing the skip list here makes a rescan the way to retry a file that
     // has since been repaired or replaced. The cost of being wrong is one
     // failed decode, after which it is skipped again.
     badImages = ({})
-    if (!hasFolder()) {
-      pool = []
-      poolLoaded = false
+    if (scanProc.running) scanProc.running = false
+    pools = ({})
+    dealQueues = ({})
+    poolLoaded = false
+    if (!hasFolder()) return
+    scanQueue = distinctPoolKeys()
+    drainScans()
+  }
+
+  function drainScans() {
+    if (scanProc.running) return
+    if (!scanQueue.length) {
+      poolLoaded = true
+      if (hasFolder()) shuffle(displayedIsEmpty())
       return
     }
-    if (scanProc.running) scanProc.running = false
+    var key = scanQueue[0]
+    scanQueue = scanQueue.slice(1)
+    scanningKey = key
     // Newline-delimited, not -print0: StdioCollector hands the output over as
     // a string, and NUL separators do not survive that conversion.
     scanProc.command = ["bash", "-c",
-      "find -L " + Util.shellQuote(folder) + (recursive ? "" : " -maxdepth 1") +
+      "find -L " + Util.shellQuote(poolKeyFolder(key)) +
+      (poolKeyRecursive(key) ? "" : " -maxdepth 1") +
       " -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif'" +
       " -o -iname '*.bmp' -o -iname '*.webp' \\) 2>/dev/null"]
     scanProc.running = true
@@ -200,15 +324,16 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         var found = String(text || "").split("\n").filter(function(p) { return p !== "" })
-        root.pool = found
-        root.poolLoaded = true
-        // The queue describes a pass over the previous pool; a new scan may
-        // have added or removed files, so start the pass again rather than
-        // deal paths that are no longer there.
-        root.dealQueue = []
-        if (root.hasFolder()) root.shuffle(root.displayedIsEmpty())
+        var next = ({})
+        for (var k in root.pools) next[k] = root.pools[k]
+        next[root.scanningKey] = found
+        root.pools = next
       }
     }
+    // Chained on exit, not on stdout: stdout can finish before the process
+    // does, and starting the next scan while this one is still running would
+    // drop it.
+    onExited: root.drainScans()
   }
 
   function displayedIsEmpty() {
@@ -237,7 +362,16 @@ Item {
   // to see roughly a third of the folder not at all, and some images three or
   // four times. The randomness feels worse than it is, because a repeat two
   // wallpapers apart is much more noticeable than an even rotation.
-  property var dealQueue: []
+  // poolKey -> remaining paths. One pass per folder, so a display pointed at a
+  // small folder wraps often without dragging a larger one round with it.
+  property var dealQueues: ({})
+
+  function setQueue(key, list) {
+    var next = ({})
+    for (var k in dealQueues) next[k] = dealQueues[k]
+    next[key] = list
+    dealQueues = next
+  }
 
   // The one place a repeat can still show up is across the wrap: the tail of a
   // pass and the head of the next are drawn independently, so an image can
@@ -245,8 +379,8 @@ Item {
   // on screen -- not just the primary's -- because on a two-monitor setup the
   // second draw is just as visible as the first, and guarding only the head
   // leaves it free to repeat.
-  function refillQueue(avoid) {
-    var next = shuffled(usablePool())
+  function refillQueue(key, avoid) {
+    var next = shuffled(usablePoolFor(key))
     var avoidList = Array.isArray(avoid) ? avoid : (avoid ? [avoid] : [])
 
     // Guard the leading positions a deal will consume, and only as far as the
@@ -261,58 +395,92 @@ Item {
         break
       }
     }
-    dealQueue = next
+    setQueue(key, next)
   }
 
-  // Take `count` images off the queue, refilling as it runs dry. Returns fewer
-  // than asked for only when the pool is empty, which is the caller's cue that
-  // there is nothing to show.
-  function dealNext(count, avoid) {
+  // Take `count` images off a pool's queue, refilling as it runs dry. Returns
+  // fewer than asked for only when that pool is empty, which is the caller's
+  // cue that there is nothing to show on those displays.
+  function dealNext(key, count, avoid) {
     var avoidList = Array.isArray(avoid) ? avoid.slice() : (avoid ? [avoid] : [])
     var out = []
     while (out.length < count) {
-      if (!dealQueue.length) {
+      var queue = dealQueues[key] || []
+      if (!queue.length) {
         // Mid-deal refills must also avoid what this deal has already handed
         // out, or one shuffle could put the same image on two displays.
-        refillQueue(avoidList.concat(out))
-        if (!dealQueue.length) break
+        refillQueue(key, avoidList.concat(out))
+        queue = dealQueues[key] || []
+        if (!queue.length) break
       }
-      var queue = dealQueue.slice()
+      queue = queue.slice()
       out.push(String(queue.shift()))
-      dealQueue = queue
+      setQueue(key, queue)
     }
     return out
   }
 
   function dropFromQueue(path) {
-    if (!dealQueue.length) return
-    dealQueue = dealQueue.filter(function(p) { return p !== path })
+    var next = ({})
+    for (var k in dealQueues) {
+      next[k] = dealQueues[k].filter(function(p) { return p !== path })
+    }
+    dealQueues = next
   }
 
-  // Deal one image per screen. With more images than screens every display
-  // gets a distinct one; with fewer, the queue wraps mid-deal and picks repeat
-  // rather than leaving a display black.
+  // Deal one image per screen. Displays are grouped by the folder they draw
+  // from and dealt a group at a time, so displays sharing a folder never get
+  // the same image at once while displays on different folders are unaffected
+  // by each other's pool running short.
+  //
+  // A display in single mode keeps its pinned image and consumes nothing from
+  // any queue: that is how one monitor stays put while another rotates.
   function pickForScreens() {
     var names = screenNames()
     var picks = ({})
-    if (!names.length || !usablePool().length) return picks
+    if (!names.length) return picks
 
+    // What is on screen now, kept out of the head of a refilled queue.
     var avoid = []
     for (var a = 0; a < names.length; a++) {
       var showing = String(displayedMap[names[a]] || "")
       if (showing && avoid.indexOf(showing) === -1) avoid.push(showing)
     }
 
-    if (!perDisplay) {
-      var one = dealNext(1, avoid)[0] || ""
-      if (!one) return picks
-      for (var i = 0; i < names.length; i++) picks[names[i]] = one
-      return picks
+    // Group the shuffling displays by pool; pin the single ones as we go.
+    var groups = ({})
+    var order = []
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i]
+      var cfg = configFor(name)
+      if (cfg.mode === "single") {
+        if (cfg.pinned !== "") picks[name] = cfg.pinned
+        continue
+      }
+      var key = poolKeyFor(name)
+      if (key === "") continue
+      if (!groups[key]) { groups[key] = []; order.push(key) }
+      groups[key].push(name)
     }
 
-    var dealt = dealNext(names.length, avoid)
-    if (!dealt.length) return picks
-    for (var j = 0; j < names.length; j++) picks[names[j]] = dealt[j % dealt.length]
+    for (var g = 0; g < order.length; g++) {
+      var poolKey = order[g]
+      var members = groups[poolKey]
+      if (!usablePoolFor(poolKey).length) continue
+
+      // perDisplay only has meaning within a group: it asks whether these
+      // displays mirror one image or each get their own.
+      if (!perDisplay) {
+        var one = dealNext(poolKey, 1, avoid)[0] || ""
+        if (!one) continue
+        for (var m = 0; m < members.length; m++) picks[members[m]] = one
+        continue
+      }
+
+      var dealt = dealNext(poolKey, members.length, avoid)
+      if (!dealt.length) continue
+      for (var d = 0; d < members.length; d++) picks[members[d]] = dealt[d % dealt.length]
+    }
     return picks
   }
 
@@ -738,12 +906,12 @@ Item {
     function status(): string {
       return JSON.stringify({
         folder: root.folder,
-        recursive: root.recursive,
+        recursive: configFor(root.primaryScreenName()).recursive,
         perDisplay: root.perDisplay,
         intervalSec: root.intervalSec,
         poolSize: root.usablePool().length,
         skipped: Object.keys(root.badImages).length,
-        queued: root.dealQueue.length,
+        queued: (root.dealQueues[root.poolKeyFor(root.primaryScreenName())] || []).length,
         screens: root.displayedMap,
         shuffleOnWake: root.shuffleOnWake,
         // Whether the lock and idle services were found. Without them the wake
@@ -806,13 +974,24 @@ Item {
     }
   }
 
-  onFolderChanged: {
-    poolLoaded = false
-    if (hasFolder()) rescan()
-    else refreshBackground()
-  }
-  onRecursiveChanged: if (hasFolder()) rescan()
+  // Anything that changes which images belong in which pool. Debounced into
+  // one rebuild: editing a folder field emits a change per keystroke, and a
+  // single panel action can write several keys in a row.
+  onDisplayConfigChanged: configReload.restart()
+  onPerDisplayConfigChanged: configReload.restart()
+  onFolderChanged: configReload.restart()
   onPerDisplayChanged: if (hasFolder()) shuffle(false)
+
+  Timer {
+    id: configReload
+    interval: 250
+    repeat: false
+    onTriggered: {
+      root.poolLoaded = false
+      if (root.hasFolder()) root.rescan()
+      else root.refreshBackground()
+    }
+  }
 
   Connections {
     target: Quickshell
