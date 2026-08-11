@@ -23,8 +23,6 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  readonly property string folder: String(setting("folder", ""))
-  readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
   readonly property bool shuffleOnWake: setting("shuffleOnWake", false) === true
@@ -33,6 +31,159 @@ Panel {
   readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
 
   readonly property string autoDisplayLabel: "Automatic (first display)"
+
+  // ---------------------------------------------------- per-display config
+
+  readonly property bool perDisplayConfig: setting("perDisplayConfig", false) === true
+  readonly property var displayConfig: setting("displayConfig", null)
+
+  // Which display's settings the panel is showing. Empty means the shared
+  // "all" entry, which is also what every display reads when the per-display
+  // toggle is off.
+  property string editing: ""
+
+  readonly property string editingKey: perDisplayConfig && editing !== "" ? editing : "all"
+
+  // The same resolution the service performs, so the panel shows what is
+  // actually in effect rather than what was last typed. Legacy top-level
+  // folder/recursive are the fallback, which is what makes an older settings
+  // file open correctly instead of looking empty.
+  function configFor(key) {
+    var dc = displayConfig
+    var c = (dc && typeof dc === "object" && dc[key] && typeof dc[key] === "object") ? dc[key] : null
+    if (!c && dc && dc.all && typeof dc.all === "object") c = dc.all
+    var pick = function(k, legacy) {
+      return (c && c[k] !== undefined && c[k] !== null) ? c[k] : legacy
+    }
+    var mode = String(pick("mode", "shuffle"))
+    var scaling = String(pick("scaling", "zoom"))
+    return {
+      folder: String(pick("folder", setting("folder", ""))),
+      recursive: pick("recursive", setting("recursive", true)) === true,
+      mode: mode === "single" ? "single" : "shuffle",
+      pinned: String(pick("pinned", "")),
+      scaling: ["zoom", "fitHeight", "fitWidth", "actual"].indexOf(scaling) !== -1 ? scaling : "zoom"
+    }
+  }
+
+  readonly property var current: configFor(editingKey)
+
+  // Writes the whole displayConfig back, because setBarWidget replaces a key
+  // rather than merging into it. Seeding from the resolved config also folds
+  // any legacy top-level settings into the new shape on the first edit, which
+  // is the only migration this needs.
+  function persistDisplay(key, value) {
+    var dc = ({})
+    var existing = displayConfig
+    if (existing && typeof existing === "object") {
+      for (var k in existing) {
+        if (existing[k] && typeof existing[k] === "object") {
+          var copy = ({})
+          for (var f in existing[k]) copy[f] = existing[k][f]
+          dc[k] = copy
+        }
+      }
+    }
+    if (!dc[editingKey]) dc[editingKey] = configFor(editingKey)
+    dc[editingKey][key] = value
+    persist("displayConfig", dc)
+  }
+
+  readonly property var scalingOptions: [
+    { key: "zoom", label: "Zoom" },
+    { key: "fitHeight", label: "Fit ↕" },
+    { key: "fitWidth", label: "Fit ↔" },
+    { key: "actual", label: "Actual" }
+  ]
+
+  function scalingLabels() {
+    var out = []
+    for (var i = 0; i < scalingOptions.length; i++) out.push(scalingOptions[i].label)
+    return out
+  }
+
+  function scalingLabelFor(key) {
+    for (var i = 0; i < scalingOptions.length; i++)
+      if (scalingOptions[i].key === key) return scalingOptions[i].label
+    return "Zoom"
+  }
+
+  function scalingKeyFor(label) {
+    for (var i = 0; i < scalingOptions.length; i++)
+      if (scalingOptions[i].label === label) return scalingOptions[i].key
+    return "zoom"
+  }
+
+  // Primary first, so the display driving the theme reads as the default.
+  function displayTabs() {
+    var out = []
+    var primary = resolvedPrimary
+    if (primary !== "" && displays.indexOf(primary) !== -1) out.push(primary)
+    for (var i = 0; i < displays.length; i++)
+      if (String(displays[i]) !== primary) out.push(String(displays[i]))
+    return out
+  }
+
+  function displayTabLabels() {
+    var tabs = displayTabs()
+    var out = []
+    for (var i = 0; i < tabs.length; i++)
+      out.push(tabs[i] === resolvedPrimary ? "★ " + tabs[i] : tabs[i])
+    return out
+  }
+
+  function tabLabelToDisplay(label) {
+    return String(label).replace(/^★ /, "")
+  }
+
+  // Which group of settings is on show.
+  property string tab: "displays"
+
+  function tabLabel() {
+    if (tab === "shuffling") return "Shuffling"
+    if (tab === "theme") return "Theme"
+    return "Displays"
+  }
+
+  function editingTabLabel() {
+    var tabs = displayTabs()
+    var name = editing !== "" && tabs.indexOf(editing) !== -1 ? editing : (tabs.length ? tabs[0] : "")
+    return name === resolvedPrimary ? "★ " + name : name
+  }
+
+  // ------------------------------------------------------------- the picker
+
+  property var pickerImages: []
+
+  // Listed by the widget rather than taken from the service's pool: the pool
+  // holds only what the *service* is configured to use, and the picker has to
+  // show the folder being edited, which may be a different display's.
+  function loadPicker() {
+    var folder = String(current.folder || "").trim()
+    if (folder === "" || pickerProc.running) { pickerImages = []; return }
+    pickerProc.command = ["bash", "-c",
+      "find -L " + Util.shellQuote(folder) + (current.recursive ? "" : " -maxdepth 1") +
+      " -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif'" +
+      " -o -iname '*.bmp' -o -iname '*.webp' \\) 2>/dev/null | sort | head -500"]
+    pickerProc.running = true
+  }
+
+  Process {
+    id: pickerProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.pickerImages = String(text || "").split("\n").filter(function(p) { return p !== "" })
+      }
+    }
+  }
+
+  // The picker shows the folder of whichever display is being edited, so it
+  // has to reload when either changes -- not only when single mode is chosen.
+  // Guarded: both fire while the component is still being built, before the
+  // `current` binding has produced anything to read.
+  onEditingChanged: if (current && current.mode === "single") loadPicker()
+  onDisplayConfigChanged: if (current && current.mode === "single") loadPicker()
 
   // Reported by the service, so the picker lists the outputs it will actually
   // choose between rather than the bar's own view of them.
@@ -62,7 +213,7 @@ Panel {
   property int skipped: 0
 
   readonly property string statusLine: {
-    if (folder === "") return "No folder set — using the current theme's backgrounds."
+    if (current.folder === "") return "No folder set — using the current theme's backgrounds."
     if (poolSize < 0) return "Scanning…"
     if (poolSize === 0)
       return skipped > 0
@@ -162,7 +313,7 @@ Panel {
 
     var cmd = ["zenity", "--file-selection", "--directory",
       "--title=Choose a wallpaper folder"]
-    if (root.folder !== "") cmd.push("--filename=" + root.folder + "/")
+    if (root.current.folder !== "") cmd.push("--filename=" + root.current.folder + "/")
     browseProc.command = cmd
     browseProc.running = true
   }
@@ -193,7 +344,7 @@ Panel {
         var picked = String(text || "").trim()
         if (picked === "") return
         root.folderEdited = false
-        root.persist("folder", picked)
+        root.persistDisplay("folder", picked)
       }
     }
   }
@@ -235,11 +386,13 @@ Panel {
   // The setting changes from more places than this field: the file dialog, the
   // CLI, or this same panel on another monitor. Mirror it back unless the user
   // is part-way through typing something else.
-  onFolderChanged: if (!folderEdited && folderField) folderField.text = folder
+  // The folder can change from the file dialog, the CLI, or by switching to
+  // another display's tab. Mirror it back unless the user is mid-edit.
+  onCurrentChanged: if (!folderEdited && folderField) folderField.text = current.folder
 
   onOpenedChanged: if (opened) {
     folderEdited = false
-    folderField.text = root.folder
+    folderField.text = root.current.folder
     refreshStatus()
     if (!matugenProbe.running) matugenProbe.running = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -263,7 +416,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "󰸉"
-    tooltipText: root.folder === "" ? "Wallpapers" : "Wallpapers — " + root.folder
+    tooltipText: root.current.folder === "" ? "Wallpapers" : "Wallpapers — " + root.current.folder
     active: root.opened
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.shuffleNow()
@@ -307,181 +460,347 @@ Panel {
         width: parent.width
         spacing: Style.space(12)
 
-        PanelSectionHeader {
-          text: "WALLPAPER FOLDER"
+        // Three groups of settings, one visible at a time. The panel outgrew a
+        // single scroll of controls once displays could be configured
+        // individually, and the cap on its height is a clamp rather than a
+        // viewport -- content past it spills outside the border instead of
+        // becoming reachable.
+        ButtonGroup {
+          width: parent.width
+          options: ["Displays", "Shuffling", "Theme"]
+          value: root.tabLabel()
           foreground: root.fg
           fontFamily: root.fontFamily
+          onChanged: function(v) { root.tab = String(v).toLowerCase() }
         }
 
-        Row {
-          width: parent.width
-          spacing: Style.space(8)
+        // ═══════════════════════════════════════════════════════ displays
 
-          TextField {
-            id: folderField
-            width: parent.width - browseButton.implicitWidth - parent.spacing
+        Column {
+          visible: root.tab === "displays"
+          width: parent.width
+          spacing: Style.space(12)
+
+          Dropdown {
+            width: parent.width
+            label: "Primary display"
+            options: root.displayOptions()
+            value: root.displayValue()
             foreground: root.fg
-            placeholderText: "~/Pictures/wallpapers"
-            // Only a keystroke counts as an edit. Assigning text from the
-            // setting below must not arm the write-back.
-            onTextChanged: if (activeFocus) root.folderEdited = true
-            onAccepted: {
-              root.folderEdited = false
-              root.persist("folder", text.trim())
+            fontFamily: root.fontFamily
+            onChanged: function(v) {
+              root.persist("primaryDisplay", v === root.autoDisplayLabel ? "" : String(v))
             }
-            // editingFinished fires on any focus loss, including the panel
-            // being dismissed because the file dialog took focus. Writing back
-            // unconditionally there is what made Browse… look broken: the field
-            // still held the old path and overwrote the one just chosen.
-            onEditingFinished: {
-              if (!root.folderEdited) return
-              root.folderEdited = false
-              if (text.trim() !== root.folder) root.persist("folder", text.trim())
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Configure each display separately"
+            description: "Off: one configuration shared by every display."
+            checked: root.perDisplayConfig
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("perDisplayConfig", !root.perDisplayConfig)
+          }
+
+          ButtonGroup {
+            visible: root.perDisplayConfig && root.displays.length > 0
+            width: parent.width
+            options: root.displayTabLabels()
+            value: root.editingTabLabel()
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { root.editing = root.tabLabelToDisplay(v) }
+          }
+
+          Text {
+            visible: !root.perDisplayConfig
+            width: parent.width
+            text: "All displays"
+            color: Qt.darker(root.fg, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          PanelSectionHeader {
+            text: "FOLDER"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: folderField
+              width: parent.width - browseButton.implicitWidth - parent.spacing
+              foreground: root.fg
+              placeholderText: "~/Pictures/wallpapers"
+              // Only a keystroke counts as an edit. Assigning text from the
+              // setting must not arm the write-back.
+              onTextChanged: if (activeFocus) root.folderEdited = true
+              onAccepted: {
+                root.folderEdited = false
+                root.persistDisplay("folder", text.trim())
+              }
+              // editingFinished fires on any focus loss, including the panel
+              // being dismissed because the file dialog took focus. Writing
+              // back unconditionally there is what made Browse… look broken:
+              // the field still held the old path and overwrote the one just
+              // chosen.
+              onEditingFinished: {
+                if (!root.folderEdited) return
+                root.folderEdited = false
+                if (text.trim() !== root.current.folder) root.persistDisplay("folder", text.trim())
+              }
             }
+
+            Button {
+              id: browseButton
+              text: "Browse…"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              anchors.verticalCenter: parent.verticalCenter
+              onClicked: root.browse()
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: root.statusLine
+            color: Qt.darker(root.fg, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Button {
-            id: browseButton
-            text: "Browse…"
+            visible: root.current.folder !== ""
+            text: "Clear folder (use theme backgrounds)"
             bordered: true
+            leftAlign: true
+            width: parent.width
             foreground: root.fg
             fontFamily: root.fontFamily
-            anchors.verticalCenter: parent.verticalCenter
-            onClicked: root.browse()
+            onClicked: root.persistDisplay("folder", "")
           }
-        }
 
-        Text {
-          width: parent.width
-          text: root.statusLine
-          color: Qt.darker(root.fg, 1.5)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        Button {
-          visible: root.folder !== ""
-          text: "Clear folder (use theme backgrounds)"
-          bordered: true
-          leftAlign: true
-          width: parent.width
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("folder", "")
-        }
-
-        PanelSeparator {}
-
-        Toggle {
-          width: parent.width
-          label: "Search subfolders"
-          description: "Include images nested below the chosen folder."
-          checked: root.recursive
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("recursive", !root.recursive)
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Different image per display"
-          description: "Deal each monitor its own random pick instead of mirroring one image."
-          checked: root.perDisplay
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("perDisplay", !root.perDisplay)
-        }
-
-        PanelSeparator {}
-
-        NumberField {
-          label: "Auto-shuffle every (seconds, 0 = off)"
-          value: root.intervalSec
-          from: 0
-          to: 86400
-          stepSize: 60
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onModified: function(v) { root.persist("intervalSec", v) }
-        }
-
-        Toggle {
-          width: parent.width
-          // Kept short deliberately: the Toggle label elides rather than wraps,
-          // and the longer wording was cut off mid-word at panel width.
-          label: "Shuffle on unlock or wake"
-          description: "Change wallpaper on unlock or screensaver exit rather than on a timer."
-          checked: root.shuffleOnWake
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("shuffleOnWake", !root.shuffleOnWake)
-        }
-
-        PanelSeparator {}
-
-        PanelSectionHeader {
-          text: "THEME FROM WALLPAPER"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Generate theme from wallpaper"
-          description: "Build an 'omawall' theme from the primary display's image and switch to it."
-          checked: root.autoTheme
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("autoTheme", !root.autoTheme)
-        }
-
-        Text {
-          visible: root.matugenPresent === 0
-          width: parent.width
-          text: "matugen is not installed — run: sudo pacman -S matugen"
-          color: Color.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-
-        Dropdown {
-          width: parent.width
-          label: "Primary display"
-          options: root.displayOptions()
-          value: root.displayValue()
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onChanged: function(v) {
-            root.persist("primaryDisplay", v === root.autoDisplayLabel ? "" : String(v))
-          }
-        }
-
-        Toggle {
-          width: parent.width
-          label: "Light theme"
-          description: "Generate a light palette instead of a dark one."
-          checked: root.themeMode === "light"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-          onClicked: root.persist("themeMode", root.themeMode === "light" ? "dark" : "light")
-        }
-
-        PanelSeparator {}
-
-        Row {
-          width: parent.width
-          spacing: Style.space(8)
-
-          Button {
-            text: "Generate theme now"
-            bordered: true
+          Toggle {
+            width: parent.width
+            label: "Search subfolders"
+            description: "Include images nested below the chosen folder."
+            checked: root.current.recursive
             foreground: root.fg
             fontFamily: root.fontFamily
-            onClicked: root.generateThemeNow()
+            onClicked: root.persistDisplay("recursive", !root.current.recursive)
+          }
+
+          PanelSectionHeader {
+            text: "MODE"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          ButtonGroup {
+            width: parent.width
+            options: ["Shuffle", "Single"]
+            value: root.current.mode === "single" ? "Single" : "Shuffle"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) {
+              var mode = String(v).toLowerCase()
+              root.persistDisplay("mode", mode)
+              if (mode === "single") root.loadPicker()
+            }
+          }
+
+          // The picker. Thumbnails come straight off disk, and GridView only
+          // instantiates the delegates in view, so a folder of hundreds costs
+          // a screenful of decodes rather than hundreds.
+          Rectangle {
+            visible: root.current.mode === "single"
+            width: parent.width
+            height: Style.space(220)
+            color: "transparent"
+            border.width: Style.normalBorderWidth
+            border.color: Qt.darker(root.fg, 2.0)
+
+            GridView {
+              id: picker
+              anchors.fill: parent
+              anchors.margins: Style.space(4)
+              clip: true
+              cellWidth: Math.floor((width - 1) / 3)
+              cellHeight: Math.round(cellWidth * 9 / 16)
+              model: root.pickerImages
+
+              delegate: Item {
+                required property var modelData
+                width: picker.cellWidth
+                height: picker.cellHeight
+
+                Image {
+                  anchors.fill: parent
+                  anchors.margins: Style.space(3)
+                  source: "file://" + modelData
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                  cache: true
+                  // Decode at thumbnail size rather than full resolution:
+                  // without this a grid of 4K wallpapers would decode hundreds
+                  // of megabytes to draw a few hundred pixels.
+                  sourceSize.width: 320
+                  clip: true
+
+                  Rectangle {
+                    anchors.fill: parent
+                    color: "transparent"
+                    border.width: Style.normalBorderWidth * 2
+                    border.color: Color.accent
+                    visible: root.current.pinned === modelData
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.persistDisplay("pinned", String(modelData))
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: root.current.mode === "single"
+            width: parent.width
+            text: root.current.pinned === ""
+              ? "No image chosen yet."
+              : root.current.pinned.substring(root.current.pinned.lastIndexOf("/") + 1)
+            color: Qt.darker(root.fg, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideMiddle
+          }
+
+          PanelSectionHeader {
+            text: "SCALING"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          ButtonGroup {
+            width: parent.width
+            options: root.scalingLabels()
+            value: root.scalingLabelFor(root.current.scaling)
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { root.persistDisplay("scaling", root.scalingKeyFor(v)) }
           }
         }
+
+        // ══════════════════════════════════════════════════════ shuffling
+
+        Column {
+          visible: root.tab === "shuffling"
+          width: parent.width
+          spacing: Style.space(12)
+
+          NumberField {
+            label: "Auto-shuffle every (seconds, 0 = off)"
+            value: root.intervalSec
+            from: 0
+            to: 86400
+            stepSize: 60
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onModified: function(v) { root.persist("intervalSec", v) }
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Shuffle on unlock or wake"
+            description: "Change wallpaper on unlock or screensaver exit rather than on a timer."
+            checked: root.shuffleOnWake
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("shuffleOnWake", !root.shuffleOnWake)
+          }
+
+          Toggle {
+            // With each display configured separately this has no meaning:
+            // every display already draws from its own folder.
+            visible: !root.perDisplayConfig
+            width: parent.width
+            label: "Different image per display"
+            description: "Off mirrors one image across every display."
+            checked: root.perDisplay
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("perDisplay", !root.perDisplay)
+          }
+
+          Text {
+            width: parent.width
+            text: "Displays set to Single keep their image and are left alone."
+            color: Qt.darker(root.fg, 1.6)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // ══════════════════════════════════════════════════════════ theme
+
+        Column {
+          visible: root.tab === "theme"
+          width: parent.width
+          spacing: Style.space(12)
+
+          Toggle {
+            width: parent.width
+            label: "Generate theme from wallpaper"
+            description: "Build an 'omawall' theme from the primary display's image and switch to it."
+            checked: root.autoTheme
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("autoTheme", !root.autoTheme)
+          }
+
+          Text {
+            visible: root.matugenPresent === 0
+            width: parent.width
+            text: "matugen is not installed — run: sudo pacman -S matugen"
+            color: Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Light theme"
+            description: "Generate a light palette instead of a dark one."
+            checked: root.themeMode === "light"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("themeMode", root.themeMode === "light" ? "dark" : "light")
+          }
+
+          Text {
+            width: parent.width
+            text: root.resolvedPrimary === ""
+              ? "Built from your primary display."
+              : "Built from " + root.resolvedPrimary + ", your primary display."
+            color: Qt.darker(root.fg, 1.6)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // ════════════════════════════════════════════ always visible
 
         PanelSeparator {}
 
@@ -498,18 +817,25 @@ Panel {
           }
 
           Button {
-            text: "Rescan folder"
+            text: "Rescan"
             bordered: true
             foreground: root.fg
             fontFamily: root.fontFamily
             onClicked: root.rescanNow()
+          }
+
+          Button {
+            text: "Generate theme"
+            bordered: true
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.generateThemeNow()
           }
         }
 
         Column {
           width: parent.width
           spacing: Style.space(2)
-          visible: root.folder !== ""
 
           Repeater {
             model: {
