@@ -58,11 +58,21 @@ Panel {
   property int poolSize: -1
   property var screenPicks: ({})
 
+  property int skipped: 0
+
   readonly property string statusLine: {
     if (folder === "") return "No folder set — using the current theme's backgrounds."
     if (poolSize < 0) return "Scanning…"
-    if (poolSize === 0) return "No images found in that folder."
-    return poolSize + (poolSize === 1 ? " image" : " images") + " found."
+    if (poolSize === 0)
+      return skipped > 0
+        ? "No usable images — " + skipped + (skipped === 1 ? " file" : " files")
+          + " could not be decoded."
+        : "No images found in that folder."
+    var line = poolSize + (poolSize === 1 ? " image" : " images") + " found."
+    if (skipped > 0)
+      line += " " + skipped + (skipped === 1 ? " image was" : " images were")
+        + " skipped as undecodable; rescan to retry."
+    return line
   }
 
   // ------------------------------------------------------------- persistence
@@ -116,6 +126,7 @@ Panel {
         try { data = JSON.parse(raw) } catch (e) { return }
         if (!data || data.poolSize === undefined) return
         root.poolSize = Number(data.poolSize)
+        root.skipped = Number(data.skipped || 0)
         root.screenPicks = data.screens || ({})
         root.displays = Array.isArray(data.displays) ? data.displays : []
         root.resolvedPrimary = String(data.primaryDisplay || "")

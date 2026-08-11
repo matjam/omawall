@@ -161,7 +161,23 @@ Item {
   property var pool: []
   property bool poolLoaded: false
 
+  // Paths Qt refused to decode, kept as a set so each is only diagnosed once.
+  // A file can be in the folder and still be undecodable: larger than Qt's
+  // image allocation limit, truncated, or renamed to an extension it is not.
+  // The scan cannot tell -- only the decoder can -- so the pool is filtered
+  // here as failures surface rather than up front.
+  property var badImages: ({})
+
+  function usablePool() {
+    var bad = badImages
+    return pool.filter(function(p) { return !bad[p] })
+  }
+
   function rescan() {
+    // Clearing the skip list here makes a rescan the way to retry a file that
+    // has since been repaired or replaced. The cost of being wrong is one
+    // failed decode, after which it is skipped again.
+    badImages = ({})
     if (!hasFolder()) {
       pool = []
       poolLoaded = false
@@ -211,13 +227,14 @@ Item {
   function pickForScreens() {
     var names = screenNames()
     var picks = ({})
-    if (!pool.length || !names.length) return picks
+    var usable = usablePool()
+    if (!usable.length || !names.length) return picks
     if (!perDisplay) {
-      var one = pool[Math.floor(Math.random() * pool.length)]
+      var one = usable[Math.floor(Math.random() * usable.length)]
       for (var i = 0; i < names.length; i++) picks[names[i]] = one
       return picks
     }
-    var bag = shuffled(pool)
+    var bag = shuffled(usable)
     for (var j = 0; j < names.length; j++) picks[names[j]] = bag[j % bag.length]
     return picks
   }
@@ -237,6 +254,61 @@ Item {
   function primaryPick(picks) {
     var name = primaryScreenName()
     return name ? String(picks[name] || "") : ""
+  }
+
+  // ------------------------------------------------------- undecodable images
+
+  function noteBadImage(path) {
+    path = String(path || "")
+    if (!path || badImages[path]) return
+    var next = ({})
+    for (var k in badImages) next[k] = badImages[k]
+    next[path] = true
+    badImages = next
+    console.warn("omawall: skipping image that could not be decoded: " + path)
+    replaceBadImage(path)
+  }
+
+  // Re-deal only the displays holding the bad image. Reshuffling everything
+  // would punish the other monitors for one unreadable file, and the swap is
+  // instant because there is nothing worth animating away from -- the failed
+  // image was never visible.
+  function replaceBadImage(path) {
+    if (!hasFolder()) return
+    var usable = usablePool()
+    if (!usable.length) return
+
+    var names = screenNames()
+    var picks = ({})
+    var inUse = ({})
+    var affected = []
+
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      var cur = String(incomingMap[n] || displayedMap[n] || "")
+      if (!cur || cur === path || badImages[cur]) affected.push(n)
+      else { picks[n] = cur; inUse[cur] = true }
+    }
+    if (!affected.length) return
+
+    for (var j = 0; j < affected.length; j++) {
+      var bag = shuffled(usable)
+      var chosen = ""
+      for (var b = 0; b < bag.length; b++) {
+        if (!perDisplay || !inUse[bag[b]]) { chosen = bag[b]; break }
+      }
+      // Fewer usable images than displays: repeating one beats a black screen.
+      if (!chosen) chosen = bag[0]
+      if (!chosen) return
+      picks[affected[j]] = chosen
+      inUse[chosen] = true
+    }
+
+    // A replacement that also fails to decode lands back here, but each pass
+    // removes one path from the pool, so the retries are bounded by its size.
+    applyPerScreen(picks, true)
+    syncCurrentLink(picks)
+    if (autoTheme) requestTheme(primaryPick(picks))
   }
 
   // The lock screen and `omarchy theme bg current` both read the state
@@ -552,7 +624,8 @@ Item {
         recursive: root.recursive,
         perDisplay: root.perDisplay,
         intervalSec: root.intervalSec,
-        poolSize: root.pool.length,
+        poolSize: root.usablePool().length,
+        skipped: Object.keys(root.badImages).length,
         screens: root.displayedMap,
         autoTheme: root.autoTheme,
         themeMode: root.themeMode,
@@ -679,7 +752,10 @@ Item {
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
-        onStatusChanged: if (status === Image.Ready) root.noteBaseReady(panel.screenKey)
+        onStatusChanged: {
+          if (status === Image.Ready) root.noteBaseReady(panel.screenKey)
+          else if (status === Image.Error) root.noteBadImage(panel.dispPath)
+        }
       }
 
       Image {
@@ -716,7 +792,13 @@ Item {
           cache: false
           smooth: true
           mipmap: true
-          onStatusChanged: panel.reportIncomingReady()
+          // An incoming image that errors never reports ready, so the reveal
+          // would sit armed until its timeout and then commit a blank layer.
+          // Swap the path out instead.
+          onStatusChanged: {
+            if (status === Image.Error) root.noteBadImage(panel.incPath)
+            else panel.reportIncomingReady()
+          }
         }
       }
 

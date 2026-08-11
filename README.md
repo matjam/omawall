@@ -17,6 +17,10 @@ background service, so you can install it and decide later.
   shuffle by hand.
 - **Recursive scanning** — optionally include images nested below the chosen
   folder. Picks up `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp` and `.webp`.
+- **Undecodable files are skipped** — a file too large for Qt's image
+  allocation limit, truncated, or misnamed is dropped from the pool the first
+  time it fails and the affected display is dealt another image instead. The
+  panel reports how many were skipped; a rescan retries them.
 - **Theme from wallpaper** — optionally derive an Omarchy theme from the image
   on your primary display and switch to it, so the bar, terminal, editor and
   everything else Omarchy themes follow the picture behind them. See
