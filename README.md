@@ -11,8 +11,13 @@ background service, so you can install it and decide later.
 
 ## What it does
 
-- **Per-display wallpapers** — each monitor is dealt its own random pick from
-  the pool instead of mirroring one image across all of them.
+- **Per-display wallpapers** — each monitor is dealt its own pick from the pool
+  instead of mirroring one image across all of them.
+- **Every image before any repeat** — picks come off one shuffled queue that is
+  reshuffled only when it empties, so a folder of 500 wallpapers shows all 500
+  before any comes round again. Sampling at random instead would leave roughly
+  a third of a folder unseen over the same number of shuffles while showing
+  others three or four times.
 - **Auto-shuffle** — reshuffle every _n_ seconds, or leave it at `0` and
   shuffle by hand.
 - **Recursive scanning** — optionally include images nested below the chosen

@@ -201,6 +201,10 @@ Item {
         var found = String(text || "").split("\n").filter(function(p) { return p !== "" })
         root.pool = found
         root.poolLoaded = true
+        // The queue describes a pass over the previous pool; a new scan may
+        // have added or removed files, so start the pass again rather than
+        // deal paths that are no longer there.
+        root.dealQueue = []
         if (root.hasFolder()) root.shuffle(root.displayedIsEmpty())
       }
     }
@@ -221,21 +225,93 @@ Item {
     return out
   }
 
+  // ------------------------------------------------------------- deal order
+
+  // What is left of the current pass through the pool. Images are dealt off
+  // the front and the queue is reshuffled only once it empties, so a folder of
+  // 500 wallpapers shows all 500 before any of them comes round again.
+  //
+  // Re-randomising the whole pool on every shuffle -- which is what this used
+  // to do -- is sampling with replacement: over 500 shuffles you would expect
+  // to see roughly a third of the folder not at all, and some images three or
+  // four times. The randomness feels worse than it is, because a repeat two
+  // wallpapers apart is much more noticeable than an even rotation.
+  property var dealQueue: []
+
+  // The one place a repeat can still show up is across the wrap: the tail of a
+  // pass and the head of the next are drawn independently, so an image can
+  // land on the same display twice running. `avoid` is every image currently
+  // on screen -- not just the primary's -- because on a two-monitor setup the
+  // second draw is just as visible as the first, and guarding only the head
+  // leaves it free to repeat.
+  function refillQueue(avoid) {
+    var next = shuffled(usablePool())
+    var avoidList = Array.isArray(avoid) ? avoid : (avoid ? [avoid] : [])
+
+    // Guard the leading positions a deal will consume, and only as far as the
+    // pool can actually supply alternatives. A pool no larger than the number
+    // of displays has nothing to swap in, and must repeat.
+    var guard = Math.min(avoidList.length, Math.max(0, next.length - avoidList.length))
+    for (var i = 0; i < guard; i++) {
+      if (avoidList.indexOf(next[i]) === -1) continue
+      for (var j = guard; j < next.length; j++) {
+        if (avoidList.indexOf(next[j]) !== -1) continue
+        var tmp = next[i]; next[i] = next[j]; next[j] = tmp
+        break
+      }
+    }
+    dealQueue = next
+  }
+
+  // Take `count` images off the queue, refilling as it runs dry. Returns fewer
+  // than asked for only when the pool is empty, which is the caller's cue that
+  // there is nothing to show.
+  function dealNext(count, avoid) {
+    var avoidList = Array.isArray(avoid) ? avoid.slice() : (avoid ? [avoid] : [])
+    var out = []
+    while (out.length < count) {
+      if (!dealQueue.length) {
+        // Mid-deal refills must also avoid what this deal has already handed
+        // out, or one shuffle could put the same image on two displays.
+        refillQueue(avoidList.concat(out))
+        if (!dealQueue.length) break
+      }
+      var queue = dealQueue.slice()
+      out.push(String(queue.shift()))
+      dealQueue = queue
+    }
+    return out
+  }
+
+  function dropFromQueue(path) {
+    if (!dealQueue.length) return
+    dealQueue = dealQueue.filter(function(p) { return p !== path })
+  }
+
   // Deal one image per screen. With more images than screens every display
-  // gets a distinct one; with fewer, picks repeat rather than leaving a
-  // display black.
+  // gets a distinct one; with fewer, the queue wraps mid-deal and picks repeat
+  // rather than leaving a display black.
   function pickForScreens() {
     var names = screenNames()
     var picks = ({})
-    var usable = usablePool()
-    if (!usable.length || !names.length) return picks
+    if (!names.length || !usablePool().length) return picks
+
+    var avoid = []
+    for (var a = 0; a < names.length; a++) {
+      var showing = String(displayedMap[names[a]] || "")
+      if (showing && avoid.indexOf(showing) === -1) avoid.push(showing)
+    }
+
     if (!perDisplay) {
-      var one = usable[Math.floor(Math.random() * usable.length)]
+      var one = dealNext(1, avoid)[0] || ""
+      if (!one) return picks
       for (var i = 0; i < names.length; i++) picks[names[i]] = one
       return picks
     }
-    var bag = shuffled(usable)
-    for (var j = 0; j < names.length; j++) picks[names[j]] = bag[j % bag.length]
+
+    var dealt = dealNext(names.length, avoid)
+    if (!dealt.length) return picks
+    for (var j = 0; j < names.length; j++) picks[names[j]] = dealt[j % dealt.length]
     return picks
   }
 
@@ -265,6 +341,7 @@ Item {
     for (var k in badImages) next[k] = badImages[k]
     next[path] = true
     badImages = next
+    dropFromQueue(path)
     console.warn("omawall: skipping image that could not be decoded: " + path)
     replaceBadImage(path)
   }
@@ -292,13 +369,17 @@ Item {
     if (!affected.length) return
 
     for (var j = 0; j < affected.length; j++) {
-      var bag = shuffled(usable)
+      // Drawn from the same queue as an ordinary deal, so a decode failure
+      // costs the pass one position rather than reaching outside the rotation.
       var chosen = ""
-      for (var b = 0; b < bag.length; b++) {
-        if (!perDisplay || !inUse[bag[b]]) { chosen = bag[b]; break }
+      var drawn = ""
+      for (var attempt = 0; attempt < 8; attempt++) {
+        drawn = dealNext(1, path)[0] || ""
+        if (!drawn) break
+        if (!perDisplay || !inUse[drawn]) { chosen = drawn; break }
       }
       // Fewer usable images than displays: repeating one beats a black screen.
-      if (!chosen) chosen = bag[0]
+      if (!chosen) chosen = drawn
       if (!chosen) return
       picks[affected[j]] = chosen
       inUse[chosen] = true
@@ -626,6 +707,7 @@ Item {
         intervalSec: root.intervalSec,
         poolSize: root.usablePool().length,
         skipped: Object.keys(root.badImages).length,
+        queued: root.dealQueue.length,
         screens: root.displayedMap,
         autoTheme: root.autoTheme,
         themeMode: root.themeMode,
