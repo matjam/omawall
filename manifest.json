@@ -23,8 +23,19 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
+      "imageSource": "folder",
       "folder": "",
       "recursive": true,
+      "pixabayQuery": "",
+      "pixabayImageType": "photo",
+      "pixabayOrientation": "horizontal",
+      "pixabayCategory": "",
+      "pixabayMinWidth": 0,
+      "pixabayMinHeight": 0,
+      "pixabayEditorsChoice": false,
+      "pixabaySafeSearch": true,
+      "pixabayOrder": "popular",
+      "pixabayCacheMB": 512,
       "perDisplay": true,
       "intervalSec": 0,
       "shuffleOnWake": false,
@@ -34,11 +45,95 @@
     },
     "schema": [
       {
+        "key": "imageSource",
+        "type": "string",
+        "label": "Wallpaper source",
+        "defaultValue": "folder",
+        "description": "folder or pixabay. Must not be called 'source': Omarchy's bar reserves that key for custom QML modules."
+      },
+      {
         "key": "folder",
         "type": "path",
         "label": "Wallpaper folder",
         "defaultValue": "",
         "description": "Leave empty to use the current theme's backgrounds."
+      },
+      {
+        "key": "pixabayQuery",
+        "type": "string",
+        "label": "Pixabay search",
+        "defaultValue": "",
+        "description": "Search term. Empty returns Pixabay's most popular images."
+      },
+      {
+        "key": "pixabayImageType",
+        "type": "string",
+        "label": "Image type",
+        "defaultValue": "photo",
+        "description": "all, photo or illustration."
+      },
+      {
+        "key": "pixabayOrientation",
+        "type": "string",
+        "label": "Orientation",
+        "defaultValue": "horizontal",
+        "description": "all, horizontal or vertical."
+      },
+      {
+        "key": "pixabayCategory",
+        "type": "string",
+        "label": "Category",
+        "defaultValue": "",
+        "description": "One of Pixabay's categories, or empty for any."
+      },
+      {
+        "key": "pixabayMinWidth",
+        "type": "integer",
+        "label": "Minimum width",
+        "min": 0,
+        "max": 7680,
+        "step": 320,
+        "defaultValue": 0,
+        "description": "0 matches your largest display."
+      },
+      {
+        "key": "pixabayMinHeight",
+        "type": "integer",
+        "label": "Minimum height",
+        "min": 0,
+        "max": 4320,
+        "step": 180,
+        "defaultValue": 0,
+        "description": "0 matches your largest display."
+      },
+      {
+        "key": "pixabayEditorsChoice",
+        "type": "boolean",
+        "label": "Editor's Choice only",
+        "defaultValue": false
+      },
+      {
+        "key": "pixabaySafeSearch",
+        "type": "boolean",
+        "label": "Safe search",
+        "defaultValue": true
+      },
+      {
+        "key": "pixabayOrder",
+        "type": "string",
+        "label": "Order",
+        "defaultValue": "popular",
+        "description": "popular or latest."
+      },
+      {
+        "key": "pixabayCacheMB",
+        "type": "integer",
+        "label": "Image cache budget (MB)",
+        "min": 64,
+        "max": 8192,
+        "step": 64,
+        "defaultValue": 512,
+        "description": "Least recently used images are evicted above this."
       },
       {
         "key": "recursive",

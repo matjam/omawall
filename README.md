@@ -18,6 +18,8 @@ display gets its own image, and your whole desktop theme can follow it.
 - **Shuffle** on a timer, on unlock and screensaver exit, or by hand.
 - **Recursive scan** of `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp`.
 - **Skips files it can't decode** and re-deals that display.
+- **Pixabay as a source** — search it instead of pointing at a folder. Needs a
+  free API key. See [Pixabay](#pixabay).
 - **Theme from wallpaper** — recolors everything Omarchy themes. Needs matugen.
 - **Bar widget** for all of it. Middle-click the icon to shuffle.
 
@@ -76,6 +78,27 @@ omarchy-shell background status         # JSON state
 # hyprland bind
 bind = SUPER SHIFT, W, exec, omarchy-shell -q background shuffle
 ```
+
+## Pixabay
+
+Switch the source to **Pixabay** in the panel, paste a free
+[API key](https://pixabay.com/api/docs/), and set a search. Your key is stored
+`0600` in `~/.config/omawall/pixabay-key`, deliberately not in `shell.json` —
+that file gets pasted into forum posts.
+
+**Expect upscaling on a large display.** Pixabay serves a downscaled copy, not
+the original: 1280px on the longest edge for an ordinary key, 1920px with full
+API access. On anything wider that is visibly soft, and the panel says so with
+your actual numbers. Per-display configuration is the way around it — Pixabay
+on a laptop panel, a local folder on the big screen.
+
+Their terms shape the implementation. Hotlinking is not allowed, so images are
+downloaded before being shown; "systematic mass downloads" are not allowed, so
+only the search results are cached up front (three requests) and an individual
+image is fetched when the shuffle first reaches it. Responses are cached for 24
+hours because their terms require it. The cache is LRU-evicted to a budget, and
+the panel credits the photographer for whatever is on screen, as their terms
+ask.
 
 ## Theme from wallpaper
 

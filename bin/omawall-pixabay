@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+
+"""Pixabay as a wallpaper source for omawall.
+
+Pixabay's terms rule out the two obvious implementations. Hotlinking their
+URLs is not allowed, so images must land on disk before they are shown; and
+"systematic mass downloads are not allowed", so pulling all 500 hits of a
+query up front is out. What remains is the shape here: cache the search
+results as metadata, which costs three requests, and download an individual
+image only when the shuffle actually reaches it. The pool is still the whole
+result set; only the bytes are lazy.
+
+Responses are cached for 24 hours, which their terms require rather than
+merely permit -- `sync` is a no-op inside that window unless forced.
+
+Only the standard library is used. Python is guaranteed on Omarchy: the
+omarchy package depends on uwsm, which depends on python.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+API = "https://pixabay.com/api/"
+
+CONFIG_DIR = Path.home() / ".config" / "omawall"
+KEY_FILE = CONFIG_DIR / "pixabay-key"
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omawall" / "pixabay"
+IMAGE_DIR = CACHE_DIR / "images"
+
+# Their terms require caching responses for 24 hours.
+MIN_SYNC_AGE = 24 * 60 * 60
+PER_PAGE = 200
+# Pixabay exposes at most 500 results per query, however you page.
+MAX_RESULTS = 500
+REQUEST_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 120
+USER_AGENT = "omawall (+https://github.com/matjam/omawall)"
+
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+class PixabayError(Exception):
+    """Anything the user can act on: a bad key, a rejected search, no key."""
+
+
+# --------------------------------------------------------------- key storage
+
+
+def store_key(stream) -> str:
+    key = stream.read().strip()
+    if not key:
+        raise PixabayError("refusing to store an empty key")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Opened with the mode already applied: writing and then chmod would leave
+    # a window in which the key sits on disk world-readable.
+    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(key + "\n")
+    return "stored"
+
+
+def read_key() -> str:
+    try:
+        key = KEY_FILE.read_text().strip()
+    except FileNotFoundError:
+        raise PixabayError(
+            "no API key set (get one at https://pixabay.com/api/docs/)"
+        ) from None
+    if not key:
+        raise PixabayError("the stored API key is empty")
+    return key
+
+
+# ------------------------------------------------------------------- search
+
+
+class Search:
+    """The search parameters, and the cache location they imply."""
+
+    FIELDS = (
+        "query", "image_type", "orientation", "category",
+        "min_width", "min_height", "editors_choice", "safesearch", "order",
+    )
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.query = (args.query or "").strip()
+        self.image_type = args.image_type
+        self.orientation = args.orientation
+        self.category = (args.category or "").strip()
+        self.min_width = max(0, args.min_width)
+        self.min_height = max(0, args.min_height)
+        self.editors_choice = args.editors_choice
+        self.safesearch = args.safesearch
+        self.order = args.order
+        self.budget_mb = max(64, args.budget_mb)
+
+    def signature(self) -> str:
+        """Everything that changes which images come back, and nothing else.
+
+        Two configurations that would return the same results share a cache
+        entry, so toggling an unrelated setting does not re-fetch.
+        """
+        raw = "\n".join(str(getattr(self, f)) for f in self.FIELDS)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    @property
+    def dir(self) -> Path:
+        return CACHE_DIR / "searches" / self.signature()
+
+    @property
+    def hits_file(self) -> Path:
+        return self.dir / "hits.json"
+
+    def params(self, key: str, page: int) -> dict:
+        params = {
+            "key": key,
+            "per_page": PER_PAGE,
+            "page": page,
+            "image_type": self.image_type,
+            "order": self.order,
+            "safesearch": "true" if self.safesearch else "false",
+            "editors_choice": "true" if self.editors_choice else "false",
+        }
+        if self.query:
+            params["q"] = self.query[:100]
+        if self.orientation and self.orientation != "all":
+            params["orientation"] = self.orientation
+        if self.category:
+            params["category"] = self.category
+        if self.min_width:
+            params["min_width"] = self.min_width
+        if self.min_height:
+            params["min_height"] = self.min_height
+        return params
+
+
+# ----------------------------------------------------------------- requests
+
+
+def request_page(search: Search, key: str, page: int) -> tuple[dict, dict]:
+    url = API + "?" + urllib.parse.urlencode(search.params(key, page))
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            body = json.loads(response.read().decode())
+            return body, dict(response.headers)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise PixabayError("rate limited by Pixabay; try again shortly") from None
+        if exc.code in (401, 403):
+            raise PixabayError("Pixabay rejected the API key") from None
+        if exc.code == 400:
+            raise PixabayError(
+                "Pixabay rejected the search (check the query and options)"
+            ) from None
+        raise PixabayError(f"Pixabay returned HTTP {exc.code}") from None
+    except urllib.error.URLError as exc:
+        raise PixabayError(f"could not reach Pixabay: {exc.reason}") from None
+    except json.JSONDecodeError:
+        raise PixabayError("Pixabay returned a malformed response") from None
+
+
+def respect_rate_limit(headers: dict) -> None:
+    """100 requests per 60 seconds.
+
+    A full sync spends three, so this will almost never trip. It matters for a
+    key shared with another tool, and the reset interval is in the response
+    rather than something to guess at.
+    """
+    remaining = headers.get("X-RateLimit-Remaining")
+    if remaining is None:
+        return
+    try:
+        if int(remaining) > 3:
+            return
+        reset = min(int(headers.get("X-RateLimit-Reset", 60)), 120)
+    except ValueError:
+        return
+    print(f"omawall-pixabay: rate limit nearly spent, waiting {reset}s", file=sys.stderr)
+    time.sleep(reset)
+
+
+def normalise(hit: dict) -> dict:
+    """Keep only what is used later, at the largest resolution available.
+
+    fullHDURL and largeImageURL require full API access. Without it only
+    webformatURL comes back, which is 640px on its longest edge -- unusable as
+    a wallpaper. The quality is recorded so `sync` can say so rather than
+    silently producing blurry backgrounds.
+    """
+    for field, quality, width in (
+        ("fullHDURL", "fullhd", 1920),
+        ("largeImageURL", "large", 1280),
+        ("webformatURL", "webformat", 640),
+    ):
+        url = hit.get(field)
+        if url:
+            break
+    else:
+        return {}
+    return {
+        "id": hit.get("id"),
+        "tags": hit.get("tags", ""),
+        "user": hit.get("user", ""),
+        "pageURL": hit.get("pageURL", ""),
+        "width": hit.get("imageWidth") or hit.get("webformatWidth") or 0,
+        "height": hit.get("imageHeight") or hit.get("webformatHeight") or 0,
+        "url": url,
+        "quality": quality,
+        # The longest edge Pixabay will actually serve, which is not the
+        # original's size: without full API access the largest available is
+        # largeImageURL at 1280px even for a 6516px original.
+        "servedWidth": width,
+    }
+
+
+def write_json(path: Path, payload: dict) -> None:
+    """Write atomically: a reader must never see a half-written cache."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+# ------------------------------------------------------------------ commands
+
+
+def cmd_sync(search: Search, force: bool) -> dict:
+    hits_file = search.hits_file
+    if not force and hits_file.exists():
+        age = int(time.time() - hits_file.stat().st_mtime)
+        if age < MIN_SYNC_AGE:
+            cached = json.loads(hits_file.read_text())
+            return {
+                "status": "cached",
+                "ageSeconds": age,
+                "hits": len(cached.get("hits", [])),
+                "total": cached.get("total", 0),
+            }
+
+    key = read_key()
+    collected: list[dict] = []
+    total = 0
+    seen: set = set()
+
+    for page in range(1, (MAX_RESULTS // PER_PAGE) + 2):
+        body, headers = request_page(search, key, page)
+        total = body.get("totalHits", 0)
+        hits = body.get("hits", [])
+        if not hits:
+            break
+        for hit in hits:
+            entry = normalise(hit)
+            # Paging a result set that is being reordered underneath you can
+            # hand back the same image twice; dealing it twice would look like
+            # a broken shuffle.
+            if entry and entry["id"] not in seen:
+                seen.add(entry["id"])
+                collected.append(entry)
+        if len(collected) >= min(total or MAX_RESULTS, MAX_RESULTS):
+            break
+        respect_rate_limit(headers)
+
+    del collected[MAX_RESULTS:]
+
+    write_json(hits_file, {"fetchedAt": int(time.time()), "total": total, "hits": collected})
+
+    return {
+        "status": "synced",
+        "hits": len(collected),
+        "total": total,
+        # The caller compares this against the displays it has to fill, so it
+        # can say plainly that these images will be upscaled rather than
+        # leaving the user to wonder why their wallpaper looks soft.
+        "servedWidth": min((e["servedWidth"] for e in collected), default=0),
+    }
+
+
+def load_hits(search: Search) -> list[dict]:
+    try:
+        return json.loads(search.hits_file.read_text()).get("hits", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def cache_path(entry: dict) -> Path:
+    """Keyed by image id, not by search, so a photo appearing in two searches
+    is stored once."""
+    suffix = Path(urllib.parse.urlparse(entry["url"]).path).suffix.lower()
+    if suffix not in IMAGE_SUFFIXES:
+        suffix = ".jpg"
+    return IMAGE_DIR / f"{entry['id']}{suffix}"
+
+
+def cmd_pool(search: Search) -> str:
+    return "\n".join(str(cache_path(entry)) for entry in load_hits(search))
+
+
+def download(url: str, target: Path) -> bool:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".part-")
+    try:
+        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response, \
+                os.fdopen(fd, "wb") as handle:
+            shutil.copyfileobj(response, handle)
+        # Renamed only once every byte is there: a truncated file would be
+        # cached indefinitely and shown as a broken wallpaper.
+        os.replace(tmp, target)
+        return True
+    except (urllib.error.URLError, OSError) as exc:
+        Path(tmp).unlink(missing_ok=True)
+        print(f"omawall-pixabay: failed to download {url}: {exc}", file=sys.stderr)
+        return False
+
+
+def cmd_fetch(search: Search, paths: list[str]) -> int:
+    by_id = {str(entry["id"]): entry for entry in load_hits(search)}
+    if not by_id:
+        raise PixabayError("no cached search; run sync first")
+
+    failures = 0
+    downloaded = 0
+    for raw in paths:
+        path = Path(raw)
+        if path.exists() and path.stat().st_size > 0:
+            # Touch so the LRU below sees it as recently used. Some mounts are
+            # noatime, so this cannot be left to the read itself.
+            os.utime(path, None)
+            continue
+        entry = by_id.get(path.stem)
+        if not entry:
+            print(f"omawall-pixabay: no URL for image {path.stem}", file=sys.stderr)
+            failures += 1
+            continue
+        if download(entry["url"], path):
+            downloaded += 1
+        else:
+            failures += 1
+
+    # Only worth walking the cache directory when something was added to it.
+    if downloaded:
+        prune(search.budget_mb)
+    return 1 if failures else 0
+
+
+def cmd_credits(search: Search) -> str:
+    """Path -> photographer, for attribution.
+
+    Pixabay's terms require showing users where images originate, so the panel
+    needs this for whatever is currently on screen. Emitted as one map rather
+    than a lookup per wallpaper, since the caller already re-reads this
+    whenever the pool changes.
+    """
+    return json.dumps({
+        str(cache_path(entry)): {"user": entry["user"], "pageURL": entry["pageURL"]}
+        for entry in load_hits(search)
+    })
+
+
+def cmd_info(search: Search, target: str) -> str:
+    stem = Path(target).stem
+    for entry in load_hits(search):
+        if str(entry["id"]) == stem:
+            return json.dumps({
+                "user": entry["user"],
+                "pageURL": entry["pageURL"],
+                "tags": entry["tags"],
+            })
+    return ""
+
+
+def prune(budget_mb: int) -> None:
+    """Least-recently-used eviction. Cached images are re-downloadable, so the
+    cache is a convenience rather than something to preserve."""
+    if not IMAGE_DIR.exists():
+        return
+    files = []
+    used = 0
+    for path in IMAGE_DIR.iterdir():
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        files.append((stat.st_atime, stat.st_size, path))
+        used += stat.st_size
+
+    budget = budget_mb * 1024 * 1024
+    if used <= budget:
+        return
+    for _, size, path in sorted(files):
+        if used <= budget:
+            break
+        try:
+            path.unlink()
+            used -= size
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------- main
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="omawall-pixabay", description=__doc__.split("\n\n")[0]
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def with_search(sp):
+        sp.add_argument("--query", default="")
+        sp.add_argument("--image-type", default="photo",
+                        choices=["all", "photo", "illustration", "vector"])
+        sp.add_argument("--orientation", default="horizontal",
+                        choices=["all", "horizontal", "vertical"])
+        sp.add_argument("--category", default="")
+        sp.add_argument("--min-width", type=int, default=1920)
+        sp.add_argument("--min-height", type=int, default=1080)
+        sp.add_argument("--editors-choice", default="false",
+                        type=lambda v: str(v).lower() == "true")
+        sp.add_argument("--safesearch", default="true",
+                        type=lambda v: str(v).lower() == "true")
+        sp.add_argument("--order", default="popular", choices=["popular", "latest"])
+        sp.add_argument("--budget-mb", type=int, default=512)
+        return sp
+
+    sub.add_parser("set-key", help="read an API key from stdin and store it 0600")
+    sub.add_parser("key-status", help="print set or missing")
+    sub.add_parser("clear", help="remove all cached metadata and images")
+
+    with_search(sub.add_parser("sync", help="refresh the cached result set")) \
+        .add_argument("--force", action="store_true")
+    with_search(sub.add_parser("pool", help="print the local path of every hit"))
+    with_search(sub.add_parser("credits", help="JSON map of path -> photographer"))
+    with_search(sub.add_parser("prune", help="evict cached images over budget"))
+
+    fetch = with_search(sub.add_parser("fetch", help="download paths not yet cached"))
+    fetch.add_argument("paths", nargs="*")
+
+    info = with_search(sub.add_parser("info", help="JSON: photographer, page URL, tags"))
+    info.add_argument("path")
+
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    try:
+        if args.command == "set-key":
+            print(store_key(sys.stdin))
+            return 0
+        if args.command == "key-status":
+            print("set" if KEY_FILE.exists() and KEY_FILE.stat().st_size else "missing")
+            return 0
+        if args.command == "clear":
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+            print("cleared")
+            return 0
+
+        search = Search(args)
+
+        if args.command == "sync":
+            print(json.dumps(cmd_sync(search, args.force)))
+        elif args.command == "pool":
+            pool = cmd_pool(search)
+            if pool:
+                print(pool)
+        elif args.command == "credits":
+            print(cmd_credits(search))
+        elif args.command == "fetch":
+            return cmd_fetch(search, args.paths)
+        elif args.command == "info":
+            info = cmd_info(search, args.path)
+            if info:
+                print(info)
+        elif args.command == "prune":
+            prune(search.budget_mb)
+        return 0
+
+    except PixabayError as exc:
+        print(f"omawall-pixabay: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

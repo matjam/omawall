@@ -104,6 +104,20 @@ while read -r entry; do
   check "entry point '$entry' is a safe relative path that exists" "$ok"
 done < <(jq -r '.entryPoints // {} | .[]' "$MANIFEST")
 
+# Omarchy's bar reserves some keys on a widget's config entry. `source` is the
+# worst of them: BarModel.js treats any entry carrying one as "load this widget
+# from a custom QML file at this path", so a settings key of that name points
+# the bar's Loader at a file that does not exist. The widget then vanishes with
+# no error naming the cause, and because the offending value lives in the
+# user's shell.json rather than the plugin, reverting the plugin does not fix
+# it. Caught here so it can never be shipped again.
+for reserved in source exec type; do
+  in_defaults=$(jq -r --arg k "$reserved" '(.barWidget.defaults // {}) | has($k)' "$MANIFEST")
+  in_schema=$(jq -r --arg k "$reserved" '[(.barWidget.schema // [])[].key] | index($k) != null' "$MANIFEST")
+  check "no settings key named '$reserved' (reserved by Omarchy's bar)" \
+    "$([[ $in_defaults == false && $in_schema == false ]] && echo true || echo false)"
+done
+
 # Root documentation. The marketplace rejects a repo missing either.
 check "a root README exists" \
   "$(ls -1 | grep -qiE '^readme(\..+)?$' && echo true || echo false)"

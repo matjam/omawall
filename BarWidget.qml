@@ -23,8 +23,42 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  readonly property string imageSource: String(setting("imageSource", "folder")) === "pixabay" ? "pixabay" : "folder"
   readonly property string folder: String(setting("folder", ""))
   readonly property bool recursive: setting("recursive", true) === true
+
+  readonly property string pxQuery: String(setting("pixabayQuery", ""))
+  readonly property string pxOrientation: String(setting("pixabayOrientation", "horizontal"))
+  readonly property string pxCategory: String(setting("pixabayCategory", ""))
+  readonly property string pxOrder: String(setting("pixabayOrder", "popular"))
+  readonly property bool pxEditorsChoice: setting("pixabayEditorsChoice", false) === true
+  readonly property bool pxSafeSearch: setting("pixabaySafeSearch", true) === true
+
+  readonly property string anyCategoryLabel: "Any category"
+  readonly property var pixabayCategories: [
+    "backgrounds", "nature", "places", "travel", "buildings", "computer",
+    "science", "animals", "food", "music", "sports", "transportation",
+    "business", "industry", "health", "people", "feelings", "education",
+    "religion", "fashion"
+  ]
+
+  function categoryOptions() { return [anyCategoryLabel].concat(pixabayCategories) }
+  function categoryValue() { return pxCategory === "" ? anyCategoryLabel : pxCategory }
+
+  // -1 unknown, 0 missing, 1 stored. Same three-state treatment as matugen:
+  // do not accuse the user of a missing key before the check has run.
+  property int keyPresent: -1
+  property string keyDraft: ""
+  property var credits: ({})
+  property string pixabayNote: ""
+
+  // Pixabay serves a downscaled copy, not the original. Without full API
+  // access that is 1280px on the longest edge, which on a wide display means
+  // visible upscaling — worth saying outright rather than leaving someone to
+  // wonder why their wallpaper looks soft.
+  property int servedWidth: 0
+  property int widestScreen: 0
+  readonly property bool upscaling: servedWidth > 0 && widestScreen > servedWidth
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
   readonly property bool shuffleOnWake: setting("shuffleOnWake", false) === true
@@ -62,6 +96,13 @@ Panel {
   property int skipped: 0
 
   readonly property string statusLine: {
+    if (imageSource === "pixabay") {
+      if (keyPresent === 0) return "Add your API key to search Pixabay."
+      if (poolSize < 0) return "Searching Pixabay…"
+      if (poolSize === 0) return "No images matched that search."
+      return poolSize + " image" + (poolSize === 1 ? "" : "s")
+        + " available. Downloaded as they come up."
+    }
     if (folder === "") return "No folder set — using the current theme's backgrounds."
     if (poolSize < 0) return "Scanning…"
     if (poolSize === 0)
@@ -132,6 +173,11 @@ Panel {
         root.screenPicks = data.screens || ({})
         root.displays = Array.isArray(data.displays) ? data.displays : []
         root.resolvedPrimary = String(data.primaryDisplay || "")
+        root.credits = data.credits || ({})
+        root.servedWidth = Number(data.pixabayServedWidth || 0)
+        root.widestScreen = Number(data.widestScreen || 0)
+        var err = String(data.pixabayError || "")
+        if (err !== "") root.pixabayNote = err
       }
     }
   }
@@ -216,6 +262,90 @@ Panel {
     Quickshell.execDetached(["omarchy-shell", "-q", "background", "generateTheme"])
   }
 
+  // ------------------------------------------------------------- pixabay
+
+  // The shell stamps __sourceDir onto a service's manifest, but a bar widget
+  // is handed no manifest at all, so the plugin directory has to come from
+  // where this component was loaded from.
+  readonly property string pixabayTool: {
+    var dir = String(Qt.resolvedUrl("."))
+    if (dir.indexOf("file://") === 0) dir = dir.substring(7)
+    while (dir.length > 1 && dir.charAt(dir.length - 1) === "/") dir = dir.substring(0, dir.length - 1)
+    return dir === "" ? "" : dir + "/bin/omawall-pixabay"
+  }
+
+  function openApiDocs() {
+    Quickshell.execDetached(["xdg-open", "https://pixabay.com/api/docs/"])
+  }
+
+  function checkKey() {
+    if (pixabayTool === "" || keyProbe.running) return
+    keyProbe.command = [pixabayTool, "key-status"]
+    keyProbe.running = true
+  }
+
+  Process {
+    id: keyProbe
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.keyPresent = String(text || "").trim() === "set" ? 1 : 0
+    }
+  }
+
+  // Written through the tool rather than persisted with the other settings:
+  // shell.json gets pasted into issues and forum posts when people ask for
+  // help with their bar, and a key in there leaks by accident. The tool
+  // stores it 0600 in ~/.config/omawall instead.
+  function saveKey() {
+    var key = String(keyDraft || "").trim()
+    if (key === "" || pixabayTool === "" || keySaveProc.running) return
+    keySaveProc.command = ["bash", "-c",
+      "printf '%s' \"$OMAWALL_KEY\" | " + Util.shellQuote(pixabayTool) + " set-key"]
+    keySaveProc.environment = ({ "OMAWALL_KEY": key })
+    keySaveProc.running = true
+  }
+
+  Process {
+    id: keySaveProc
+    // The key goes through the environment, not argv, so it never appears in
+    // another user's `ps` output.
+    onExited: function(code, status) {
+      root.keyDraft = ""
+      keyField.text = ""
+      root.checkKey()
+      if (code === 0) {
+        root.pixabayNote = "API key saved."
+        root.syncNow()
+      } else {
+        root.pixabayNote = "Could not save the API key."
+      }
+    }
+  }
+
+  function syncNow() {
+    if (pixabayTool === "" || syncProc.running) return
+    root.pixabayNote = "Searching Pixabay…"
+    syncProc.command = ["omarchy-shell", "-q", "background", "rescan"]
+    syncProc.running = true
+    refreshTimer.restart()
+  }
+
+  Process { id: syncProc }
+
+  function clearPixabayCache() {
+    if (pixabayTool === "" || clearProc.running) return
+    clearProc.command = [pixabayTool, "clear"]
+    clearProc.running = true
+  }
+
+  Process {
+    id: clearProc
+    onExited: {
+      root.pixabayNote = "Cache cleared."
+      root.syncNow()
+    }
+  }
+
   // The generator is useless without matugen, and its absence is the one
   // failure a user can actually fix, so surface it in the panel rather than
   // only in the shell log when a run fails.
@@ -240,7 +370,9 @@ Panel {
   onOpenedChanged: if (opened) {
     folderEdited = false
     folderField.text = root.folder
+    pixabayNote = ""
     refreshStatus()
+    checkKey()
     if (!matugenProbe.running) matugenProbe.running = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -308,12 +440,27 @@ Panel {
         spacing: Style.space(12)
 
         PanelSectionHeader {
-          text: "WALLPAPER FOLDER"
+          text: "WALLPAPER SOURCE"
           foreground: root.fg
           fontFamily: root.fontFamily
         }
 
+        ButtonGroup {
+          width: parent.width
+          options: ["Folder", "Pixabay"]
+          value: root.imageSource === "pixabay" ? "Pixabay" : "Folder"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          onChanged: function(v) {
+            root.persist("imageSource", String(v).toLowerCase())
+            root.pixabayNote = ""
+          }
+        }
+
+        // ------------------------------------------------------------ folder
+
         Row {
+          visible: root.imageSource === "folder"
           width: parent.width
           spacing: Style.space(8)
 
@@ -361,7 +508,7 @@ Panel {
         }
 
         Button {
-          visible: root.folder !== ""
+          visible: root.imageSource === "folder" && root.folder !== ""
           text: "Clear folder (use theme backgrounds)"
           bordered: true
           leftAlign: true
@@ -371,9 +518,8 @@ Panel {
           onClicked: root.persist("folder", "")
         }
 
-        PanelSeparator {}
-
         Toggle {
+          visible: root.imageSource === "folder"
           width: parent.width
           label: "Search subfolders"
           description: "Include images nested below the chosen folder."
@@ -382,6 +528,168 @@ Panel {
           fontFamily: root.fontFamily
           onClicked: root.persist("recursive", !root.recursive)
         }
+
+        // ----------------------------------------------------------- pixabay
+
+        Column {
+          visible: root.imageSource === "pixabay"
+          width: parent.width
+          spacing: Style.space(12)
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: keyField
+              width: parent.width - saveKeyButton.implicitWidth - parent.spacing
+              foreground: root.fg
+              password: true
+              placeholderText: root.keyPresent === 1 ? "API key stored — type to replace" : "Your Pixabay API key"
+              onTextChanged: root.keyDraft = text
+              onAccepted: root.saveKey()
+            }
+
+            Button {
+              id: saveKeyButton
+              text: "Save"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              anchors.verticalCenter: parent.verticalCenter
+              onClicked: root.saveKey()
+            }
+          }
+
+          Button {
+            width: parent.width
+            leftAlign: true
+            bordered: true
+            text: "Get a free API key at pixabay.com/api/docs"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.openApiDocs()
+          }
+
+          TextField {
+            width: parent.width
+            foreground: root.fg
+            text: root.pxQuery
+            placeholderText: "Search term — empty for most popular"
+            onAccepted: root.persist("pixabayQuery", text.trim())
+            onEditingFinished: if (text.trim() !== root.pxQuery) root.persist("pixabayQuery", text.trim())
+          }
+
+          Dropdown {
+            width: parent.width
+            label: "Category"
+            options: root.categoryOptions()
+            value: root.categoryValue()
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) {
+              root.persist("pixabayCategory", v === root.anyCategoryLabel ? "" : String(v))
+            }
+          }
+
+          Dropdown {
+            width: parent.width
+            label: "Orientation"
+            options: ["horizontal", "vertical", "all"]
+            value: root.pxOrientation
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { root.persist("pixabayOrientation", String(v)) }
+          }
+
+          Dropdown {
+            width: parent.width
+            label: "Order"
+            options: ["popular", "latest"]
+            value: root.pxOrder
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { root.persist("pixabayOrder", String(v)) }
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Editor's Choice only"
+            description: "Restrict to images Pixabay has picked out."
+            checked: root.pxEditorsChoice
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("pixabayEditorsChoice", !root.pxEditorsChoice)
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Safe search"
+            description: "Exclude results unsuitable for all ages."
+            checked: root.pxSafeSearch
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.persist("pixabaySafeSearch", !root.pxSafeSearch)
+          }
+
+          Text {
+            visible: root.upscaling
+            width: parent.width
+            text: "Pixabay serves at most " + root.servedWidth + "px wide; your "
+              + "widest display is " + root.widestScreen + "px, so these will "
+              + "be upscaled. Full API access raises it to 1920px."
+            color: Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: root.pixabayNote !== ""
+            width: parent.width
+            text: root.pixabayNote
+            color: Qt.darker(root.fg, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Search now"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.syncNow()
+            }
+
+            Button {
+              text: "Clear cache"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.clearPixabayCache()
+            }
+          }
+
+          // Pixabay's terms require showing users where images came from, so
+          // this is attribution rather than decoration.
+          Text {
+            width: parent.width
+            text: "Images from Pixabay. Only the minimum size your largest "
+              + "display needs is requested, and each is downloaded when it "
+              + "first comes up rather than in bulk."
+            color: Qt.darker(root.fg, 1.7)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        PanelSeparator {}
 
         Toggle {
           width: parent.width
@@ -516,7 +824,16 @@ Panel {
               var out = []
               for (var name in root.screenPicks) {
                 var p = String(root.screenPicks[name] || "")
-                out.push({ screen: name, file: p.substring(p.lastIndexOf("/") + 1) })
+                // A Pixabay file is named after its numeric id, which tells a
+                // reader nothing. Credit the photographer instead, which their
+                // terms ask for anyway.
+                var credit = root.credits ? root.credits[p] : null
+                out.push({
+                  screen: name,
+                  file: credit && credit.user
+                    ? credit.user + " · Pixabay"
+                    : p.substring(p.lastIndexOf("/") + 1)
+                })
               }
               return out
             }
