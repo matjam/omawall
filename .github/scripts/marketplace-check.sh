@@ -104,13 +104,13 @@ while read -r entry; do
   check "entry point '$entry' is a safe relative path that exists" "$ok"
 done < <(jq -r '.entryPoints // {} | .[]' "$MANIFEST")
 
-# Omarchy's bar reserves some keys on a widget's config entry. `source` is the
-# worst of them: BarModel.js treats any entry carrying one as "load this widget
-# from a custom QML file at this path", so a settings key of that name points
-# the bar's Loader at a file that does not exist. The widget then vanishes with
-# no error naming the cause, and because the offending value lives in the
-# user's shell.json rather than the plugin, reverting the plugin does not fix
-# it. Caught here so it can never be shipped again.
+# Omarchy's bar reserves three keys on a widget's config entry, and `source` is
+# the dangerous one: BarModel.js reads any entry carrying it as "load this
+# widget from a custom QML file at this path". A setting of that name therefore
+# points the bar's Loader at a file that does not exist, and the widget
+# disappears with no error naming the cause. Worse, the offending value lives
+# in the user's shell.json rather than in the plugin, so reverting the plugin
+# does not bring the widget back. Caught here, where a name is cheap to change.
 for reserved in source exec type; do
   in_defaults=$(jq -r --arg k "$reserved" '(.barWidget.defaults // {}) | has($k)' "$MANIFEST")
   in_schema=$(jq -r --arg k "$reserved" '[(.barWidget.schema // [])[].key] | index($k) != null' "$MANIFEST")

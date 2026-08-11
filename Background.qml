@@ -37,71 +37,10 @@ Item {
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omawall"
   readonly property var settings: lookupSettings(shell ? shell.shellConfig : null, pluginId)
 
-  // Where the image pool comes from: a local folder, or a cached Pixabay
-  // search. Both end up as a list of local paths, so everything downstream --
-  // the deal queue, per-display picks, theme generation, skipping images that
-  // will not decode -- is shared rather than duplicated per source.
-  readonly property string imageSource: String(setting("imageSource", "folder")) === "pixabay" ? "pixabay" : "folder"
-
   readonly property string folder: expandHome(String(setting("folder", "")).trim())
   readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
-
-  readonly property string pxQuery: String(setting("pixabayQuery", "")).trim()
-  readonly property string pxImageType: String(setting("pixabayImageType", "photo"))
-  readonly property string pxOrientation: String(setting("pixabayOrientation", "horizontal"))
-  readonly property string pxCategory: String(setting("pixabayCategory", "")).trim()
-  readonly property int pxMinWidth: Math.max(0, Number(setting("pixabayMinWidth", 1920)) || 0)
-  readonly property int pxMinHeight: Math.max(0, Number(setting("pixabayMinHeight", 1080)) || 0)
-  readonly property bool pxEditorsChoice: setting("pixabayEditorsChoice", false) === true
-  readonly property bool pxSafeSearch: setting("pixabaySafeSearch", true) === true
-  readonly property string pxOrder: String(setting("pixabayOrder", "popular")) === "latest" ? "latest" : "popular"
-  readonly property int pxCacheMB: Math.max(64, Number(setting("pixabayCacheMB", 512)) || 512)
-
-  // The flags every omawall-pixabay call needs. Kept in one place because the
-  // search they describe is also what the cache is keyed on -- a caller that
-  // passed a different set would silently address a different cache entry.
-  // Pixabay's min_width filters on the *original* image, but the API only ever
-  // serves a downscaled copy -- 1280px on the longest edge for an ordinary
-  // key, 1920px with full API access. Asking for originals wider than that
-  // narrows the results without improving a single delivered pixel. Below the
-  // cap the filter still earns its place by excluding originals too small to
-  // fill even that.
-  readonly property int maxServedWidth: 1920
-
-  function widestScreen() {
-    var screens = Quickshell.screens || []
-    var w = 0
-    for (var i = 0; i < screens.length; i++) w = Math.max(w, Number(screens[i].width) || 0)
-    return w
-  }
-
-  function autoMinWidth() {
-    return Math.min(widestScreen() || 1920, maxServedWidth)
-  }
-
-  function autoMinHeight() {
-    var screens = Quickshell.screens || []
-    var h = 0
-    for (var i = 0; i < screens.length; i++) h = Math.max(h, Number(screens[i].height) || 0)
-    return Math.min(h || 1080, Math.round(maxServedWidth * 9 / 16))
-  }
-
-  function pixabayArgs() {
-    return ["--query", pxQuery,
-            "--image-type", pxImageType,
-            "--orientation", pxOrientation,
-            "--category", pxCategory,
-            "--min-width", String(pxMinWidth > 0 ? pxMinWidth : autoMinWidth()),
-            "--min-height", String(pxMinHeight > 0 ? pxMinHeight : autoMinHeight()),
-            "--editors-choice", pxEditorsChoice ? "true" : "false",
-            "--safesearch", pxSafeSearch ? "true" : "false",
-            "--order", pxOrder,
-            "--budget-mb", String(pxCacheMB)]
-  }
-
-  function pixabayTool() { return sourceDir + "/bin/omawall-pixabay" }
 
   // Theme generation. autoTheme drives it from every shuffle; the IPC command
   // below runs it once regardless, so the palette can be refreshed by hand
@@ -113,16 +52,14 @@ Item {
 
   // Stamped in by PluginRegistry; the generator script ships beside this file.
   readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
-  // True when omawall owns the wallpaper rather than deferring to Omarchy's
-  // theme backgrounds. Bindings may use it freely. Imperative code must not:
-  // when the shell injects `shell` after construction this and its inputs all
+  // Bindings may use folderMode freely. Imperative code must not: when the
+  // shell injects `shell` after construction, `folder` and `folderMode` both
   // re-evaluate, and QML gives no ordering guarantee between a dependent
-  // binding and an onXChanged handler, so a handler reading it could still see
-  // the pre-change value. hasSource() reads the settings directly.
-  readonly property bool folderMode: imageSource === "pixabay" || folder !== ""
+  // binding and an onXChanged handler. A handler that read folderMode could
+  // therefore still see the pre-change value. hasFolder() reads the source.
+  readonly property bool folderMode: folder !== ""
 
-  function hasSource() {
-    if (String(setting("imageSource", "folder")) === "pixabay") return true
+  function hasFolder() {
     return String(folder || "") !== ""
   }
 
@@ -242,26 +179,12 @@ Item {
     // has since been repaired or replaced. The cost of being wrong is one
     // failed decode, after which it is skipped again.
     badImages = ({})
-    if (!hasSource()) {
+    if (!hasFolder()) {
       pool = []
       poolLoaded = false
       return
     }
     if (scanProc.running) scanProc.running = false
-
-    if (imageSource === "pixabay") {
-      if (!sourceDir) return
-      // sync is cheap and idempotent: it honours Pixabay's 24-hour caching
-      // requirement itself and returns immediately from cache, so this can run
-      // on every rescan without turning into request traffic.
-      // sync first so its report is available, then the pool. Its stdout is
-      // captured rather than discarded: it carries the resolution Pixabay
-      // actually served, which the panel needs to warn about upscaling.
-      pixabaySyncProc.command = [pixabayTool(), "sync"].concat(pixabayArgs())
-      pixabaySyncProc.running = true
-      return
-    }
-
     // Newline-delimited, not -print0: StdioCollector hands the output over as
     // a string, and NUL separators do not survive that conversion.
     scanProc.command = ["bash", "-c",
@@ -269,41 +192,6 @@ Item {
       " -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif'" +
       " -o -iname '*.bmp' -o -iname '*.webp' \\) 2>/dev/null"]
     scanProc.running = true
-  }
-
-  // The longest edge Pixabay served for this search, 0 until a sync reports
-  // it. Compared against the displays to warn about upscaling.
-  property int pixabayServedWidth: 0
-  property string pixabayError: ""
-
-  Process {
-    id: pixabaySyncProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        if (raw !== "") {
-          try {
-            var data = JSON.parse(raw)
-            root.pixabayServedWidth = Number(data.servedWidth || 0)
-          } catch (e) { /* the pool step below reports the real problem */ }
-        }
-      }
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var err = String(text || "").trim()
-        root.pixabayError = err.replace(/^omawall-pixabay:\s*/, "")
-        if (err !== "") console.warn("omawall: " + err)
-      }
-    }
-    // Whatever sync managed, list what is cached: a failed refresh should
-    // still leave yesterday's results usable rather than an empty desktop.
-    onExited: {
-      scanProc.command = [root.pixabayTool(), "pool"].concat(root.pixabayArgs())
-      scanProc.running = true
-    }
   }
 
   Process {
@@ -318,50 +206,9 @@ Item {
         // have added or removed files, so start the pass again rather than
         // deal paths that are no longer there.
         root.dealQueue = []
-        if (root.imageSource === "pixabay") root.loadCredits()
-        if (root.hasSource()) root.shuffle(root.displayedIsEmpty())
+        if (root.hasFolder()) root.shuffle(root.displayedIsEmpty())
       }
     }
-  }
-
-  // path -> { user, pageURL }. Pixabay's terms require showing where an image
-  // came from, so the panel needs the photographer for whatever is on screen.
-  property var credits: ({})
-
-  function loadCredits() {
-    if (imageSource !== "pixabay" || !sourceDir) { credits = ({}); return }
-    if (creditsProc.running) return
-    creditsProc.command = [pixabayTool(), "credits"].concat(pixabayArgs())
-    creditsProc.running = true
-  }
-
-  Process {
-    id: creditsProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        if (raw === "") return
-        try { root.credits = JSON.parse(raw) } catch (e) { root.credits = ({}) }
-      }
-    }
-  }
-
-  function creditFor(path) {
-    var c = credits[String(path || "")]
-    return c ? c : null
-  }
-
-  // screenName -> credit, for what is on screen right now.
-  function creditsForDisplayed() {
-    var out = ({})
-    if (imageSource !== "pixabay") return out
-    var names = screenNames()
-    for (var i = 0; i < names.length; i++) {
-      var c = creditFor(displayedMap[names[i]])
-      if (c) out[names[i]] = c
-    }
-    return out
   }
 
   function displayedIsEmpty() {
@@ -437,31 +284,6 @@ Item {
     return out
   }
 
-  // Any of these changes the set of images the pool should contain, so the
-  // pool is rebuilt rather than left describing the previous search. Debounced
-  // because editing a query field emits one change per keystroke, and each
-  // rebuild would otherwise be a sync call.
-  onImageSourceChanged: sourceReload.restart()
-  onPxQueryChanged: sourceReload.restart()
-  onPxImageTypeChanged: sourceReload.restart()
-  onPxOrientationChanged: sourceReload.restart()
-  onPxCategoryChanged: sourceReload.restart()
-  onPxMinWidthChanged: sourceReload.restart()
-  onPxMinHeightChanged: sourceReload.restart()
-  onPxEditorsChoiceChanged: sourceReload.restart()
-  onPxSafeSearchChanged: sourceReload.restart()
-  onPxOrderChanged: sourceReload.restart()
-
-  Timer {
-    id: sourceReload
-    interval: 700
-    repeat: false
-    onTriggered: {
-      root.poolLoaded = false
-      root.rescan()
-    }
-  }
-
   function dropFromQueue(path) {
     if (!dealQueue.length) return
     dealQueue = dealQueue.filter(function(p) { return p !== path })
@@ -495,67 +317,15 @@ Item {
   }
 
   function shuffle(instant) {
-    if (!hasSource()) return
+    if (!hasFolder()) return
     if (!poolLoaded) { rescan(); return }
     var picks = pickForScreens()
     var empty = true
     for (var k in picks) { empty = false; break }
     if (empty) return
-
-    // A Pixabay pool names files that may not be downloaded yet -- the whole
-    // point of caching metadata rather than half a gigabyte of images. Ensure
-    // the chosen ones exist before showing them, since an absent file would
-    // otherwise reach the Image as a decode failure and get marked bad.
-    if (imageSource === "pixabay" && sourceDir) {
-      fetchThenApply(picks, instant === true)
-      return
-    }
-    applyPicks(picks, instant === true)
-  }
-
-  function applyPicks(picks, instant) {
     applyPerScreen(picks, instant === true)
     syncCurrentLink(picks)
     if (autoTheme) requestTheme(primaryPick(picks))
-  }
-
-  property var pendingPicks: null
-  property bool pendingPicksInstant: false
-
-  function fetchThenApply(picks, instant) {
-    // A shuffle that lands while a download is in flight replaces it: the
-    // newer intent is the one the user is waiting on, and the older picks are
-    // about to be superseded on screen anyway.
-    pendingPicks = picks
-    pendingPicksInstant = instant === true
-    if (fetchProc.running) fetchProc.running = false
-
-    var paths = []
-    for (var name in picks) if (picks[name]) paths.push(String(picks[name]))
-    if (!paths.length) return
-
-    fetchProc.command = [pixabayTool(), "fetch"].concat(paths).concat(pixabayArgs())
-    fetchProc.running = true
-  }
-
-  Process {
-    id: fetchProc
-    // Apply regardless of exit code. A download that failed leaves the file
-    // missing, which the decode-failure path already handles by skipping that
-    // image and re-dealing the display -- one mechanism, not two.
-    onExited: {
-      if (!root.pendingPicks) return
-      var picks = root.pendingPicks
-      root.pendingPicks = null
-      root.applyPicks(picks, root.pendingPicksInstant)
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var err = String(text || "").trim()
-        if (err !== "") console.warn("omawall: " + err)
-      }
-    }
   }
 
   function primaryPick(picks) {
@@ -582,7 +352,7 @@ Item {
   // instant because there is nothing worth animating away from -- the failed
   // image was never visible.
   function replaceBadImage(path) {
-    if (!hasSource()) return
+    if (!hasFolder()) return
     var usable = usablePool()
     if (!usable.length) return
 
@@ -702,7 +472,7 @@ Item {
   onScreensaverShowingChanged: if (!screensaverShowing) wakeShuffle()
 
   function wakeShuffle() {
-    if (!shuffleOnWake || !hasSource()) return
+    if (!shuffleOnWake || !hasFolder()) return
     wakeDebounce.restart()
   }
 
@@ -784,12 +554,12 @@ Item {
   }
 
   function refreshBackground() {
-    if (hasSource()) { shuffle(false); return }
+    if (hasFolder()) { shuffle(false); return }
     if (!readlinkProc.running) readlinkProc.running = true
   }
 
   function setBackground(path, instant) {
-    if (hasSource()) { shuffle(instant); return }
+    if (hasFolder()) { shuffle(instant); return }
     applyGlobal("", path, path, instant, false)
   }
 
@@ -817,7 +587,7 @@ Item {
   // theme switch must still recolor the bar, so the payload is applied
   // immediately rather than being carried by a reveal that never starts.
   function transitionBackgroundWithTheme(fromPath, path, finalPath, colorsB64, shellB64) {
-    if (hasSource()) {
+    if (hasFolder()) {
       setPendingTheme(colorsB64, shellB64)
       applyPendingTheme()
       return
@@ -887,7 +657,7 @@ Item {
   function openSelector() {
     // In folder mode the theme background switcher would list images we are
     // not using, so the desktop gesture reshuffles instead.
-    if (hasSource()) { rescan(); return }
+    if (hasFolder()) { rescan(); return }
     if (!bgSwitchProc.running) bgSwitchProc.running = true
   }
 
@@ -912,7 +682,7 @@ Item {
     command: ["readlink", "-f", root.currentBackgroundLink]
     stdout: StdioCollector {
       onStreamFinished: {
-        if (root.hasSource()) return
+        if (root.hasFolder()) return
         root.applyGlobal("", String(text || "").trim(), String(text || "").trim(), false, false)
       }
     }
@@ -934,7 +704,7 @@ Item {
     }
 
     function transition(fromPath: string, path: string): void {
-      if (root.hasSource()) { root.shuffle(false); return }
+      if (root.hasFolder()) { root.shuffle(false); return }
       root.applyGlobal(fromPath, path, path, false, false)
     }
 
@@ -944,7 +714,7 @@ Item {
 
     // Added by this clone.
     function shuffle(): string {
-      if (!root.hasSource()) return "no folder configured"
+      if (!root.hasFolder()) return "no folder configured"
       root.shuffle(false)
       return "ok"
     }
@@ -967,10 +737,6 @@ Item {
 
     function status(): string {
       return JSON.stringify({
-        imageSource: root.imageSource,
-        pixabayServedWidth: root.pixabayServedWidth,
-        widestScreen: root.widestScreen(),
-        pixabayError: root.pixabayError,
         folder: root.folder,
         recursive: root.recursive,
         perDisplay: root.perDisplay,
@@ -978,7 +744,6 @@ Item {
         poolSize: root.usablePool().length,
         skipped: Object.keys(root.badImages).length,
         queued: root.dealQueue.length,
-        credits: root.creditsForDisplayed(),
         screens: root.displayedMap,
         shuffleOnWake: root.shuffleOnWake,
         // Whether the lock and idle services were found. Without them the wake
@@ -1043,23 +808,23 @@ Item {
 
   onFolderChanged: {
     poolLoaded = false
-    if (hasSource()) rescan()
+    if (hasFolder()) rescan()
     else refreshBackground()
   }
-  onRecursiveChanged: if (hasSource()) rescan()
-  onPerDisplayChanged: if (hasSource()) shuffle(false)
+  onRecursiveChanged: if (hasFolder()) rescan()
+  onPerDisplayChanged: if (hasFolder()) shuffle(false)
 
   Connections {
     target: Quickshell
     // A newly-plugged display has no pick yet; deal it one.
     function onScreensChanged() {
-      if (root.hasSource()) root.shuffle(true)
+      if (root.hasFolder()) root.shuffle(true)
       else root.refreshBackground()
     }
   }
 
   Component.onCompleted: {
-    if (hasSource()) rescan()
+    if (hasFolder()) rescan()
     else refreshBackground()
   }
 
