@@ -37,8 +37,8 @@ background service, so you can install it and decide later.
   panel reports how many were skipped; a rescan retries them.
 - **Theme from wallpaper** — optionally derive an Omarchy theme from the image
   on your primary display and switch to it, so the bar, terminal, editor and
-  everything else Omarchy themes follow the picture behind them. See
-  [Theme from wallpaper](#theme-from-wallpaper).
+  everything else Omarchy themes follow the picture behind them. Needs
+  [matugen](#if-you-want-theme-generation); the rest of the plugin does not.
 - **Theme switches still work** — `omarchy theme set` keeps applying its color
   payload and recoloring the bar. Only the choice of image is taken over.
 - **Bar widget** — a wallpaper icon that opens a settings panel: browse for a
@@ -58,6 +58,24 @@ with `right` (or wherever you want the icon).
 Enabling omawall disables Omarchy's built-in `omarchy.background` service —
 the two would otherwise fight over the same wallpaper. Disabling omawall
 restores it.
+
+### If you want theme generation
+
+[Theme from wallpaper](#theme-from-wallpaper) needs **matugen**, which
+omawall does not install for you:
+
+```bash
+sudo pacman -S matugen
+```
+
+It is in Arch's official `extra` repository, so no AUR helper is needed.
+Everything else — folder mode, per-display picks, auto-shuffle, the bar
+widget — works without it, and the settings panel tells you when it is
+missing rather than failing quietly. Install it whenever you want the
+feature; nothing needs reinstalling afterwards.
+
+matugen is GPL-2.0 and omawall is MIT. omawall only executes it as a
+separate process, so the two licenses stay independent.
 
 To update later:
 
@@ -182,16 +200,8 @@ bin/omawall-generate-theme --image ~/Pictures/wall.jpg --no-apply  # write only
 - `zenity` — used only by the panel's **Browse…** button. Without it you can
   still type or paste a path into the folder field. Omarchy ships it by
   default.
-- `matugen` — required only for **Theme from wallpaper**; everything else works
-  without it, and the panel says so when it is missing. It is in Arch's
-  official `extra` repository, no AUR needed:
-
-  ```bash
-  sudo pacman -S matugen
-  ```
-
-  matugen is GPL-2.0. omawall only executes it as a separate process, so the
-  two licenses stay independent.
+- `matugen` — required only for **Theme from wallpaper**, and not installed by
+  omawall. See [If you want theme generation](#if-you-want-theme-generation).
 
 `jq` and `find` are used by the generator and ship with Omarchy. No network
 access, and nothing is written outside `~/.config/omarchy`.
