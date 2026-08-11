@@ -1,7 +1,8 @@
 # omawall
 
 Folder-backed wallpapers for [Omarchy](https://omarchy.org) Quattro. Every
-display gets its own image, and your whole desktop theme can follow it.
+display gets its own image, its own settings if you want them, and your whole
+desktop theme can follow along.
 
 > **Written by Claude**, Anthropic's coding agent. Tested on real hardware, but
 > tested isn't proven — and Omarchy plugins run unsandboxed inside your shell
@@ -12,7 +13,11 @@ display gets its own image, and your whole desktop theme can follow it.
 
 ## Features
 
-- **One image per display**, not the same one mirrored.
+- **Per-display configuration** — each screen gets its own folder, mode and
+  scaling, or share one configuration across all of them.
+- **Shuffle or pin** — rotate a folder, or hold one image chosen from a
+  thumbnail grid. Mix the two across screens.
+- **Four scaling modes** — zoom, fit height, fit width, or actual size.
 - **Every image before any repeat** — picks come off a shuffled queue that only
   reshuffles when it empties.
 - **Shuffle** on a timer, on unlock and screensaver exit, or by hand.
@@ -51,18 +56,42 @@ omarchy plugin remove matjam.omawall    # remove, leaves nothing behind
 
 ## Settings
 
-Click the wallpaper icon in the bar.
+Click the wallpaper icon in the bar. Three tabs: **Displays**, **Shuffling**,
+**Theme**. Actions and what's on each screen stay visible below them.
+
+**Displays** — per display, or shared by all of them:
 
 | Setting | Default | Does |
 | --- | --- | --- |
-| Wallpaper folder | _empty_ | Where images come from. Empty = theme backgrounds. |
+| Primary display | _auto_ | Whose image drives the generated theme. Marked ★ in the tabs. |
+| Configure each display separately | off | On: a tab per display. Off: one shared configuration. |
+| Folder | _empty_ | Where images come from. Empty = theme backgrounds. |
 | Search subfolders | on | Scan recursively. |
-| Different image per display | on | Off mirrors one image everywhere. |
+| Mode | Shuffle | **Single** pins one image, chosen from a thumbnail grid. |
+| Scaling | Zoom | Zoom, Fit ↕, Fit ↔, or Actual. |
+
+**Shuffling** — global:
+
+| Setting | Default | Does |
+| --- | --- | --- |
 | Auto-shuffle every | `0` | Seconds. `0` is off. |
-| Shuffle on unlock or wake | off | Shuffle on unlock or screensaver exit. |
-| Generate theme from wallpaper | off | Rebuild the theme on every change. |
-| Primary display | _auto_ | Whose image drives the theme. |
-| Light theme | off | Light palette instead of dark. |
+| Shuffle on unlock or wake | off | Shuffle on unlock or screensaver exit instead. |
+| Different image per display | on | Off mirrors one image across displays sharing a folder. |
+
+**Theme** — global: generate from wallpaper, and light or dark. See
+[Theme from wallpaper](#theme-from-wallpaper).
+
+### Mixing displays
+
+Set one display to **Single** and another to **Shuffle** and you get exactly
+that: the pinned one never moves while the other rotates. Displays pointed at
+the same folder share a pool and a deal queue, so they never show the same
+image at once and still see every image before repeating; displays on
+different folders rotate independently.
+
+The four scaling modes only differ when the image and the screen disagree
+about shape. A 3440×1440 wallpaper on a 3440×1440 screen looks identical under
+Zoom, Fit ↕ and Actual, because it is.
 
 Keys while the panel is open: `s` shuffle · `r` rescan · `b` browse ·
 `t` generate theme

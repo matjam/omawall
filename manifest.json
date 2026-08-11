@@ -4,7 +4,7 @@
   "name": "omawall",
   "version": "1.1.0",
   "author": "Nathan Ollerenshaw (matjam)",
-  "description": "Replaces the Omarchy background service with a folder-backed one: point it at a wallpaper directory and it deals every display its own random image, with optional auto-shuffle. Can also generate an Omarchy theme from the wallpaper on the primary display and switch to it, so the whole desktop tracks the picture behind it.",
+  "description": "Replaces the Omarchy background service with a folder-backed one. Each display can have its own folder, shuffle through it or stay pinned to one image, and scale it to taste. Can also generate an Omarchy theme from the primary display's wallpaper, so the whole desktop tracks the picture behind it.",
   "license": "MIT",
   "homepage": "https://github.com/matjam/omawall",
   "repository": "https://github.com/matjam/omawall",
@@ -18,39 +18,50 @@
   },
   "barWidget": {
     "displayName": "Wallpapers",
-    "description": "Pick a wallpaper folder, shuffle a different random image onto each display, and optionally recolor Omarchy to match.",
+    "description": "Give each display its own wallpaper folder, shuffle or pin an image, choose how it scales, and optionally recolor Omarchy to match.",
     "category": "Appearance",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "folder": "",
-      "recursive": true,
+      "primaryDisplay": "",
+      "perDisplayConfig": false,
+      "displayConfig": {},
       "perDisplay": true,
       "intervalSec": 0,
       "shuffleOnWake": false,
       "autoTheme": false,
-      "primaryDisplay": "",
-      "themeMode": "dark"
+      "themeMode": "dark",
+      "folder": "",
+      "recursive": true
     },
     "schema": [
       {
-        "key": "folder",
-        "type": "path",
-        "label": "Wallpaper folder",
+        "key": "primaryDisplay",
+        "type": "string",
+        "label": "Primary display",
         "defaultValue": "",
-        "description": "Leave empty to use the current theme's backgrounds."
+        "description": "Output whose wallpaper drives the generated theme. Empty uses the first connected display."
       },
       {
-        "key": "recursive",
+        "key": "perDisplayConfig",
         "type": "boolean",
-        "label": "Search subfolders",
-        "defaultValue": true
+        "label": "Configure each display separately",
+        "defaultValue": false,
+        "description": "Off: every display shares one configuration."
+      },
+      {
+        "key": "displayConfig",
+        "type": "object",
+        "label": "Per-display configuration",
+        "defaultValue": {},
+        "description": "Keyed by output name, plus an 'all' entry used when perDisplayConfig is off. Each holds folder, recursive, mode (shuffle or single), pinned and scaling (zoom, fitHeight, fitWidth or actual)."
       },
       {
         "key": "perDisplay",
         "type": "boolean",
         "label": "Different image per display",
-        "defaultValue": true
+        "defaultValue": true,
+        "description": "Within a group of displays sharing a folder, off mirrors one image across them."
       },
       {
         "key": "intervalSec",
@@ -66,21 +77,14 @@
         "type": "boolean",
         "label": "Shuffle on unlock or wake",
         "defaultValue": false,
-        "description": "Change wallpaper when you return to the session rather than on a timer. Pairs well with theme generation, whose apply step briefly stalls input."
+        "description": "Change wallpaper when you return to the session rather than on a timer."
       },
       {
         "key": "autoTheme",
         "type": "boolean",
         "label": "Generate theme from wallpaper",
         "defaultValue": false,
-        "description": "Build an 'omawall' Omarchy theme from the primary display's wallpaper and switch to it. Requires matugen."
-      },
-      {
-        "key": "primaryDisplay",
-        "type": "string",
-        "label": "Primary display",
-        "defaultValue": "",
-        "description": "Output name whose wallpaper drives the theme. Empty uses the first connected display."
+        "description": "Build an 'omawall' Omarchy theme from the primary display's wallpaper. Requires matugen."
       },
       {
         "key": "themeMode",
@@ -88,6 +92,20 @@
         "label": "Theme mode",
         "defaultValue": "dark",
         "description": "dark or light."
+      },
+      {
+        "key": "folder",
+        "type": "path",
+        "label": "Wallpaper folder (legacy)",
+        "defaultValue": "",
+        "description": "Read only when displayConfig has no entry, so settings written before per-display support keep working. The first panel edit folds it into displayConfig."
+      },
+      {
+        "key": "recursive",
+        "type": "boolean",
+        "label": "Search subfolders (legacy)",
+        "defaultValue": true,
+        "description": "As above; superseded by the per-display setting."
       }
     ]
   },
