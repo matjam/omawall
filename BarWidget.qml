@@ -27,6 +27,30 @@ Panel {
   readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
+  readonly property bool autoTheme: setting("autoTheme", false) === true
+  readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
+  readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
+
+  readonly property string autoDisplayLabel: "Automatic (first display)"
+
+  // Reported by the service, so the picker lists the outputs it will actually
+  // choose between rather than the bar's own view of them.
+  property var displays: []
+  property string resolvedPrimary: ""
+
+  // -1 until the check has run, so the warning below is not shown in the moment
+  // before we know either way.
+  property int matugenPresent: -1
+
+  function displayOptions() {
+    var out = [autoDisplayLabel]
+    for (var i = 0; i < displays.length; i++) out.push(String(displays[i]))
+    return out
+  }
+
+  function displayValue() {
+    return primaryDisplay === "" ? autoDisplayLabel : primaryDisplay
+  }
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: Style.font.family
@@ -93,6 +117,8 @@ Panel {
         if (!data || data.poolSize === undefined) return
         root.poolSize = Number(data.poolSize)
         root.screenPicks = data.screens || ({})
+        root.displays = Array.isArray(data.displays) ? data.displays : []
+        root.resolvedPrimary = String(data.primaryDisplay || "")
       }
     }
   }
@@ -144,9 +170,26 @@ Panel {
     refreshTimer.restart()
   }
 
+  function generateThemeNow() {
+    Quickshell.execDetached(["omarchy-shell", "-q", "background", "generateTheme"])
+  }
+
+  // The generator is useless without matugen, and its absence is the one
+  // failure a user can actually fix, so surface it in the panel rather than
+  // only in the shell log when a run fails.
+  Process {
+    id: matugenProbe
+    command: ["bash", "-c", "command -v matugen >/dev/null && echo yes || echo no"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.matugenPresent = String(text || "").trim() === "yes" ? 1 : 0
+    }
+  }
+
   onOpenedChanged: if (opened) {
     folderField.text = root.folder
     refreshStatus()
+    if (!matugenProbe.running) matugenProbe.running = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -184,7 +227,13 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(400))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(620))
+    // No cap. The cap is a maximum, not a scroll viewport, so content taller
+    // than it spills past the panel's border rather than becoming reachable --
+    // which is what the old 620 did once the theme section was added. The stock
+    // panels whose content is a fixed set of controls (clock, weather) also
+    // pass no cap and let fittedContentHeight clamp to the screen instead;
+    // the ones that do cap are those listing an unbounded number of devices.
+    contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -198,6 +247,7 @@ Panel {
         if (t === "s" || t === "S") root.shuffleNow()
         else if (t === "r" || t === "R") root.rescanNow()
         else if (t === "b" || t === "B") root.browse()
+        else if (t === "t" || t === "T") root.generateThemeNow()
       }
 
       Column {
@@ -288,6 +338,71 @@ Panel {
           foreground: root.fg
           fontFamily: root.fontFamily
           onModified: function(v) { root.persist("intervalSec", v) }
+        }
+
+        PanelSeparator {}
+
+        PanelSectionHeader {
+          text: "THEME FROM WALLPAPER"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+        }
+
+        Toggle {
+          width: parent.width
+          label: "Generate theme from wallpaper"
+          description: "Build an 'omawall' theme from the primary display's image and switch to it."
+          checked: root.autoTheme
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          onClicked: root.persist("autoTheme", !root.autoTheme)
+        }
+
+        Text {
+          visible: root.matugenPresent === 0
+          width: parent.width
+          text: "matugen is not installed — run: sudo pacman -S matugen"
+          color: Color.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
+        Dropdown {
+          width: parent.width
+          label: "Primary display"
+          options: root.displayOptions()
+          value: root.displayValue()
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          onChanged: function(v) {
+            root.persist("primaryDisplay", v === root.autoDisplayLabel ? "" : String(v))
+          }
+        }
+
+        Toggle {
+          width: parent.width
+          label: "Light theme"
+          description: "Generate a light palette instead of a dark one."
+          checked: root.themeMode === "light"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          onClicked: root.persist("themeMode", root.themeMode === "light" ? "dark" : "light")
+        }
+
+        PanelSeparator {}
+
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+
+          Button {
+            text: "Generate theme now"
+            bordered: true
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.generateThemeNow()
+          }
         }
 
         PanelSeparator {}

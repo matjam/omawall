@@ -41,6 +41,16 @@ Item {
   readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
+
+  // Theme generation. autoTheme drives it from every shuffle; the IPC command
+  // below runs it once regardless, so the palette can be refreshed by hand
+  // while auto stays off.
+  readonly property bool autoTheme: setting("autoTheme", false) === true
+  readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
+  readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
+
+  // Stamped in by PluginRegistry; the generator script ships beside this file.
+  readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
   // Bindings may use folderMode freely. Imperative code must not: when the
   // shell injects `shell` after construction, `folder` and `folderMode` both
   // re-evaluate, and QML gives no ordering guarantee between a dependent
@@ -130,6 +140,22 @@ Item {
     return names
   }
 
+  // The display whose image stands for the whole desktop: it feeds the state
+  // symlink the lock screen reads, and the palette the theme is built from. An
+  // unset or disconnected primaryDisplay falls back to the first screen rather
+  // than to nothing, so unplugging a monitor cannot leave either without a
+  // source.
+  function primaryScreenName() {
+    var names = screenNames()
+    if (!names.length) return ""
+    if (primaryDisplay && names.indexOf(primaryDisplay) !== -1) return primaryDisplay
+    // Sorted, not names[0]: Quickshell.screens comes back in a different order
+    // between restarts, and an unsorted fallback would silently change which
+    // display the theme is derived from. Alphabetical is arbitrary but stable,
+    // which is the property that matters.
+    return names.slice().sort()[0]
+  }
+
   // ------------------------------------------------------------- image pool
 
   property var pool: []
@@ -205,19 +231,77 @@ Item {
     if (empty) return
     applyPerScreen(picks, instant === true)
     syncCurrentLink(picks)
+    if (autoTheme) requestTheme(primaryPick(picks))
+  }
+
+  function primaryPick(picks) {
+    var name = primaryScreenName()
+    return name ? String(picks[name] || "") : ""
   }
 
   // The lock screen and `omarchy theme bg current` both read the state
   // symlink, so keep it pointed at something we are actually showing.
   function syncCurrentLink(picks) {
-    var names = screenNames()
-    var primary = names.length ? picks[names[0]] : ""
+    var primary = primaryPick(picks)
     if (!primary) return
-    linkProc.command = ["ln", "-nsf", String(primary), currentBackgroundLink]
+    linkProc.command = ["ln", "-nsf", primary, currentBackgroundLink]
     linkProc.running = true
   }
 
   Process { id: linkProc }
+
+  // ------------------------------------------------------ theme generation
+
+  // The image the applied palette was built from, so a reshuffle that happens
+  // to redeal the same picture does not re-run the generator.
+  property string themedFrom: ""
+  property string pendingThemeImage: ""
+
+  function currentPrimaryImage() {
+    var name = primaryScreenName()
+    if (!name) return ""
+    return String(incomingMap[name] || displayedMap[name] || "")
+  }
+
+  function requestTheme(image) {
+    image = String(image || "")
+    if (!image) return
+    pendingThemeImage = image
+    themeDebounce.restart()
+  }
+
+  // A shuffle reassigns several maps in a row and a settings edit can land as
+  // two writes; both would otherwise start a generator run per change. Coalesce
+  // into one run once the dust settles.
+  Timer {
+    id: themeDebounce
+    interval: 300
+    repeat: false
+    onTriggered: root.runThemeGeneration(false)
+  }
+
+  function runThemeGeneration(force) {
+    var image = pendingThemeImage || currentPrimaryImage()
+    if (!image || !sourceDir) return
+    if (!force && image === themedFrom) return
+    // matugen plus the theme hooks take about a second. Re-arming instead of
+    // queueing means a burst of shuffles ends in one run against the latest
+    // image rather than a backlog of runs against stale ones.
+    if (themeProc.running) { themeDebounce.restart(); return }
+    themedFrom = image
+    themeProc.command = [sourceDir + "/bin/omawall-generate-theme",
+      "--image", image, "--mode", themeMode]
+    themeProc.running = true
+  }
+
+  Process { id: themeProc }
+
+  // Turning the toggle on, or changing what the palette is derived from, should
+  // take effect immediately rather than at the next shuffle. force, because the
+  // image has not changed -- only the instructions for reading it have.
+  onAutoThemeChanged: if (autoTheme) { pendingThemeImage = ""; runThemeGeneration(true) }
+  onThemeModeChanged: if (autoTheme) { pendingThemeImage = ""; runThemeGeneration(true) }
+  onPrimaryDisplayChanged: if (autoTheme) { pendingThemeImage = ""; runThemeGeneration(true) }
 
   // --------------------------------------------------------- transitioning
 
@@ -451,6 +535,17 @@ Item {
       return "ok"
     }
 
+    // Deliberately not gated on autoTheme: this is the manual path, for a
+    // one-off palette refresh with the automatic toggle left off.
+    function generateTheme(): string {
+      if (!root.sourceDir) return "plugin source directory is unknown"
+      var image = root.currentPrimaryImage()
+      if (!image) return "no wallpaper is displayed yet"
+      root.pendingThemeImage = image
+      root.runThemeGeneration(true)
+      return "ok"
+    }
+
     function status(): string {
       return JSON.stringify({
         folder: root.folder,
@@ -458,7 +553,11 @@ Item {
         perDisplay: root.perDisplay,
         intervalSec: root.intervalSec,
         poolSize: root.pool.length,
-        screens: root.displayedMap
+        screens: root.displayedMap,
+        autoTheme: root.autoTheme,
+        themeMode: root.themeMode,
+        primaryDisplay: root.primaryScreenName(),
+        displays: root.screenNames()
       })
     }
   }

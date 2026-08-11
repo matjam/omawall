@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# Build an Omarchy theme from a wallpaper and apply it.
+#
+# matugen does the perceptual work -- deriving Material You tonal palettes from
+# the image. omawall-colors.jq maps those onto the 26 roles an Omarchy
+# colors.toml declares. This script is the plumbing between them, plus the
+# apply step.
+#
+# The theme is applied with OMARCHY_THEME_SKIP_BACKGROUND=1, the same idiom
+# omarchy-theme-refresh uses. That matters for more than tidiness: the normal
+# path ends in `background themeTransition`, which the omawall service answers
+# by shuffling, which would generate a theme, which would shuffle again.
+# Skipping the background step takes the loop out of the design rather than
+# guarding against it at runtime.
+
+set -euo pipefail
+
+THEME_NAME="omawall"
+MODE="dark"
+IMAGE=""
+APPLY=1
+
+SCRIPT_DIR=$(dirname -- "$(readlink -f -- "$0")")
+COLORS_JQ="$SCRIPT_DIR/omawall-colors.jq"
+USER_THEMES="$HOME/.config/omarchy/themes"
+USER_BACKGROUNDS="$HOME/.config/omarchy/backgrounds"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/omawall-generate-theme.lock"
+
+fail() {
+  echo "omawall-generate-theme: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: omawall-generate-theme --image <path> [--mode dark|light] [--name <theme>] [--no-apply]
+
+Generates ~/.config/omarchy/themes/<theme>/colors.toml from the image and
+applies it with omarchy-theme-set, leaving the current background untouched.
+
+  --image <path>   Wallpaper to derive colors from (required)
+  --mode <mode>    dark (default) or light
+  --name <theme>   Theme directory name (default: omawall)
+  --no-apply       Write the theme but do not switch to it
+USAGE
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+  --image) IMAGE="${2:-}"; shift 2 ;;
+  --mode) MODE="${2:-}"; shift 2 ;;
+  --name) THEME_NAME="${2:-}"; shift 2 ;;
+  --no-apply) APPLY=0; shift ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage >&2; fail "unknown option: $1" ;;
+  esac
+done
+
+[[ -n $IMAGE ]] || { usage >&2; fail "--image is required"; }
+[[ -f $IMAGE ]] || fail "image not found: $IMAGE"
+[[ $MODE == dark || $MODE == light ]] || fail "--mode must be dark or light"
+# The name becomes a directory under ~/.config/omarchy/themes and an argument
+# to omarchy-theme-set; keep it to what omarchy-theme-list can round-trip.
+[[ $THEME_NAME =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid theme name: $THEME_NAME"
+
+command -v matugen >/dev/null || fail "matugen is not installed (pacman -S matugen)"
+command -v jq >/dev/null || fail "jq is not installed"
+[[ -f $COLORS_JQ ]] || fail "missing color map: $COLORS_JQ"
+
+# Auto-shuffle can fire while a previous generation is still applying. Serialize
+# so two runs cannot interleave their writes to the same colors.toml.
+exec 9>"$LOCK"
+flock 9
+
+THEME_DIR="$USER_THEMES/$THEME_NAME"
+mkdir -p "$THEME_DIR"
+
+# --prefer is not optional in a script: with more than one candidate source
+# color and no terminal attached, matugen 4.x refuses to choose and exits
+# non-zero. Saturation gives the most recognisable accent of the six.
+palette=$(matugen image "$IMAGE" --json hex --mode "$MODE" --prefer saturation --dry-run 2>/dev/null) \
+  || fail "matugen could not extract colors from $IMAGE"
+[[ -n $palette ]] || fail "matugen produced no output for $IMAGE"
+
+colors=$(jq -r --arg mode "$MODE" -f "$COLORS_JQ" <<<"$palette") \
+  || fail "failed to map the matugen palette onto colors.toml"
+[[ -n $colors ]] || fail "color mapping produced no output"
+
+# Nothing downstream should see a half-written colors.toml: omarchy-theme-set
+# copies this file while the shell may be reading the applied result.
+tmp=$(mktemp "$THEME_DIR/.colors.toml.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$colors" >"$tmp"
+
+current_theme=""
+[[ -f $HOME/.local/state/omarchy/current/theme.name ]] \
+  && current_theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
+
+# Two wallpapers can easily yield the same palette. Re-applying would restart
+# terminals and re-run every theme hook for no visible change. The current
+# theme has to match too: identical colors still need applying if the session
+# is sitting on some other theme, which is exactly the case the first time the
+# toggle is switched on.
+if [[ -f $THEME_DIR/colors.toml ]] && cmp -s "$tmp" "$THEME_DIR/colors.toml" \
+  && { (( ! APPLY )) || [[ $current_theme == "$THEME_NAME" ]]; }; then
+  rm -f "$tmp"
+  trap - EXIT
+  echo "unchanged"
+  exit 0
+fi
+
+mv "$tmp" "$THEME_DIR/colors.toml"
+trap - EXIT
+
+# Backgrounds live outside the theme directory, so this costs a symlink rather
+# than a copy of the image on every shuffle -- omarchy-theme-set copies the
+# theme dir but never this one. It exists so `omarchy theme bg` and the theme
+# switcher have something to show for the omawall theme.
+mkdir -p "$USER_BACKGROUNDS/$THEME_NAME"
+find "$USER_BACKGROUNDS/$THEME_NAME" -maxdepth 1 -name 'current.*' -delete 2>/dev/null || true
+ln -nsf "$IMAGE" "$USER_BACKGROUNDS/$THEME_NAME/current.${IMAGE##*.}"
+
+if (( APPLY )); then
+  OMARCHY_THEME_SKIP_BACKGROUND=1 omarchy-theme-set "$THEME_NAME" >/dev/null \
+    || fail "omarchy-theme-set $THEME_NAME failed"
+fi
+
+echo "generated"

@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "matjam.omawall",
   "name": "omawall",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Nathan Ollerenshaw (matjam)",
-  "description": "Replaces the Omarchy background service with a folder-backed one: point it at a wallpaper directory and it deals every display its own random image, with optional auto-shuffle. Theme switches keep recoloring the shell as usual.",
+  "description": "Replaces the Omarchy background service with a folder-backed one: point it at a wallpaper directory and it deals every display its own random image, with optional auto-shuffle. Can also generate an Omarchy theme from the wallpaper on the primary display and switch to it, so the whole desktop tracks the picture behind it.",
   "license": "MIT",
   "homepage": "https://github.com/matjam/omawall",
   "repository": "https://github.com/matjam/omawall",
@@ -18,7 +18,7 @@
   },
   "barWidget": {
     "displayName": "Wallpapers",
-    "description": "Pick a wallpaper folder and shuffle a different random image onto each display.",
+    "description": "Pick a wallpaper folder, shuffle a different random image onto each display, and optionally recolor Omarchy to match.",
     "category": "Appearance",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -26,7 +26,10 @@
       "folder": "",
       "recursive": true,
       "perDisplay": true,
-      "intervalSec": 0
+      "intervalSec": 0,
+      "autoTheme": false,
+      "primaryDisplay": "",
+      "themeMode": "dark"
     },
     "schema": [
       {
@@ -56,6 +59,27 @@
         "max": 86400,
         "step": 60,
         "defaultValue": 0
+      },
+      {
+        "key": "autoTheme",
+        "type": "boolean",
+        "label": "Generate theme from wallpaper",
+        "defaultValue": false,
+        "description": "Build an 'omawall' Omarchy theme from the primary display's wallpaper and switch to it. Requires matugen."
+      },
+      {
+        "key": "primaryDisplay",
+        "type": "string",
+        "label": "Primary display",
+        "defaultValue": "",
+        "description": "Output name whose wallpaper drives the theme. Empty uses the first connected display."
+      },
+      {
+        "key": "themeMode",
+        "type": "string",
+        "label": "Theme mode",
+        "defaultValue": "dark",
+        "description": "dark or light."
       }
     ]
   },
