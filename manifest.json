@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "id": "matjam.omawall",
+  "name": "omawall",
+  "version": "1.0.0",
+  "author": "Nathan Ollerenshaw (matjam)",
+  "description": "Replaces the Omarchy background service with a folder-backed one: point it at a wallpaper directory and it deals every display its own random image, with optional auto-shuffle. Theme switches keep recoloring the shell as usual.",
+  "license": "MIT",
+  "homepage": "https://github.com/matjam/omawall",
+  "repository": "https://github.com/matjam/omawall",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Background.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Wallpapers",
+    "description": "Pick a wallpaper folder and shuffle a different random image onto each display.",
+    "category": "Appearance",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "folder": "",
+      "recursive": true,
+      "perDisplay": true,
+      "intervalSec": 0
+    },
+    "schema": [
+      {
+        "key": "folder",
+        "type": "path",
+        "label": "Wallpaper folder",
+        "defaultValue": "",
+        "description": "Leave empty to use the current theme's backgrounds."
+      },
+      {
+        "key": "recursive",
+        "type": "boolean",
+        "label": "Search subfolders",
+        "defaultValue": true
+      },
+      {
+        "key": "perDisplay",
+        "type": "boolean",
+        "label": "Different image per display",
+        "defaultValue": true
+      },
+      {
+        "key": "intervalSec",
+        "type": "integer",
+        "label": "Auto-shuffle interval (seconds)",
+        "min": 0,
+        "max": 86400,
+        "step": 60,
+        "defaultValue": 0
+      }
+    ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.background"
+  }
+}
