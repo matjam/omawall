@@ -45,6 +45,7 @@ Item {
   // Theme generation. autoTheme drives it from every shuffle; the IPC command
   // below runs it once regardless, so the palette can be refreshed by hand
   // while auto stays off.
+  readonly property bool shuffleOnWake: setting("shuffleOnWake", false) === true
   readonly property bool autoTheme: setting("autoTheme", false) === true
   readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
   readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
@@ -449,6 +450,41 @@ Item {
 
   Process { id: themeProc }
 
+  // ------------------------------------------------------------ wake shuffle
+
+  // Shuffling on a timer is the wrong shape when autoTheme is on: applying a
+  // theme retints every app Omarchy themes, which stalls the compositor for a
+  // moment. Mid-sentence or mid-game that reads as a freeze. Tying the shuffle
+  // to unlock and screensaver dismissal instead puts the stall where the user
+  // is already waiting to resume, and where a new wallpaper is what they
+  // expect to see anyway.
+  //
+  // These are bindings rather than one-shot lookups: services are created
+  // lazily, and the shell reassigns its whole service map when one lands, so
+  // they re-evaluate as soon as omarchy.lock and omarchy.idle exist.
+  readonly property var lockService: (shell && shell.serviceFor) ? shell.serviceFor("omarchy.lock") : null
+  readonly property var idleService: (shell && shell.serviceFor) ? shell.serviceFor("omarchy.idle") : null
+
+  readonly property bool sessionLocked: lockService ? lockService.locked === true : false
+  readonly property bool screensaverShowing: idleService ? Number(idleService.screensaverWindowCount) > 0 : false
+
+  onSessionLockedChanged: if (!sessionLocked) wakeShuffle()
+  onScreensaverShowingChanged: if (!screensaverShowing) wakeShuffle()
+
+  function wakeShuffle() {
+    if (!shuffleOnWake || !hasFolder()) return
+    wakeDebounce.restart()
+  }
+
+  // Dismissing a screensaver that had already escalated to a lock clears both
+  // flags a moment apart, which is one wake but two signals.
+  Timer {
+    id: wakeDebounce
+    interval: 400
+    repeat: false
+    onTriggered: root.shuffle(false)
+  }
+
   // Turning the toggle on, or changing what the palette is derived from, should
   // take effect immediately rather than at the next shuffle. force, because the
   // image has not changed -- only the instructions for reading it have.
@@ -709,6 +745,13 @@ Item {
         skipped: Object.keys(root.badImages).length,
         queued: root.dealQueue.length,
         screens: root.displayedMap,
+        shuffleOnWake: root.shuffleOnWake,
+        // Whether the lock and idle services were found. Without them the wake
+        // shuffle silently never fires, which is otherwise indistinguishable
+        // from the setting not working.
+        wakeSourcesReady: !!root.lockService && !!root.idleService,
+        sessionLocked: root.sessionLocked,
+        screensaverShowing: root.screensaverShowing,
         autoTheme: root.autoTheme,
         themeMode: root.themeMode,
         primaryDisplay: root.primaryScreenName(),

@@ -27,8 +27,8 @@ background service, so you can install it and decide later.
   before any comes round again. Sampling at random instead would leave roughly
   a third of a folder unseen over the same number of shuffles while showing
   others three or four times.
-- **Auto-shuffle** — reshuffle every _n_ seconds, or leave it at `0` and
-  shuffle by hand.
+- **Auto-shuffle** — reshuffle every _n_ seconds, or when you unlock the
+  session or dismiss the screensaver, or leave both off and shuffle by hand.
 - **Recursive scanning** — optionally include images nested below the chosen
   folder. Picks up `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp` and `.webp`.
 - **Undecodable files are skipped** — a file too large for Qt's image
@@ -86,6 +86,7 @@ Click the wallpaper icon in the bar to open the settings panel.
 | Search subfolders | on | Scan recursively below the folder. |
 | Different image per display | on | Deal each monitor its own pick rather than mirroring one image. |
 | Auto-shuffle every | `0` | Seconds between automatic reshuffles. `0` disables it. |
+| Shuffle on unlock or wake | off | Change wallpaper on unlock or screensaver exit instead of on a timer. |
 | Generate theme from wallpaper | off | Rebuild the `omawall` theme on every wallpaper change. |
 | Primary display | _(automatic)_ | Output whose image drives the theme. Automatic uses the first connected display. |
 | Light theme | off | Generate a light palette instead of a dark one. |
@@ -133,6 +134,25 @@ another shuffle.
 Switching to any other theme turns the result off in practice: the next
 generation switches straight back to `omawall`. Turn the toggle off first if
 you want to pick a theme and keep it.
+
+### It stalls the session for a moment
+
+Applying a theme is not free. `omarchy-theme-set` retints every app Omarchy
+themes — terminals, btop, the browser, the editor — and while that runs the
+compositor stops accepting input for a beat. The pointer stops, and a key held
+down at the wrong moment can repeat. This is what any Omarchy theme change
+costs; omawall just triggers it more often than you would by hand.
+
+That makes a short auto-shuffle interval a poor pairing. Two better options:
+
+- **Turn on "Shuffle on unlock or wake"** and set the interval to `0`. The
+  wallpaper then changes when you come back to the session, which is where a
+  pause costs nothing and a new wallpaper is what you expect to see.
+- **Leave the interval on and turn theme generation off**, refreshing the
+  palette by hand with `t` when it suits you.
+
+If you game, read the freeze as a dropped frame or two, and prefer the first
+option or none at all.
 
 ### How the palette is built
 

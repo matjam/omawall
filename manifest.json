@@ -27,6 +27,7 @@
       "recursive": true,
       "perDisplay": true,
       "intervalSec": 0,
+      "shuffleOnWake": false,
       "autoTheme": false,
       "primaryDisplay": "",
       "themeMode": "dark"
@@ -59,6 +60,13 @@
         "max": 86400,
         "step": 60,
         "defaultValue": 0
+      },
+      {
+        "key": "shuffleOnWake",
+        "type": "boolean",
+        "label": "Shuffle on unlock or wake",
+        "defaultValue": false,
+        "description": "Change wallpaper when you return to the session rather than on a timer. Pairs well with theme generation, whose apply step briefly stalls input."
       },
       {
         "key": "autoTheme",

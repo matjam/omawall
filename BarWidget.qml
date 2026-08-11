@@ -27,6 +27,7 @@ Panel {
   readonly property bool recursive: setting("recursive", true) === true
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
+  readonly property bool shuffleOnWake: setting("shuffleOnWake", false) === true
   readonly property bool autoTheme: setting("autoTheme", false) === true
   readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
   readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
@@ -95,7 +96,8 @@ Panel {
 
   Process {
     id: saveProc
-    onExited: {
+    onExited: function(code, status) {
+      if (code !== 0) console.warn("omawall: failed to save setting (exit " + code + ")")
       root.drainSaves()
       if (!root._saveQueue.length) refreshTimer.restart()
     }
@@ -147,6 +149,17 @@ Panel {
 
   function browse() {
     if (browseProc.running) return
+    // Choosing the dialog supersedes anything half-typed in the field.
+    root.folderEdited = false
+
+    // Close before launching, not because the dialog needs it but because the
+    // panel holds exclusive keyboard focus while it is open. zenity maps behind
+    // that and comes up unfocused; the click needed to focus it then lands
+    // outside the panel's card and dismisses it anyway. Standing aside first
+    // lets the dialog take focus normally and turns a panel that gets knocked
+    // over into one that hands off deliberately. It comes back in onExited.
+    root.close()
+
     var cmd = ["zenity", "--file-selection", "--directory",
       "--title=Choose a wallpaper folder"]
     if (root.folder !== "") cmd.push("--filename=" + root.folder + "/")
@@ -158,11 +171,29 @@ Panel {
   // empty string — treated the same as "no change".
   Process {
     id: browseProc
+    // Come back whether a folder was chosen or the dialog was cancelled: the
+    // dialog is an excursion from the panel, so returning to it is what the
+    // gesture implies either way. stdout is delivered before exit, so by now
+    // any chosen path has already been persisted and the panel reopens showing
+    // it rather than the path it replaced.
+    onExited: if (!root.opened) root.open()
+
+    // Without this, a zenity that fails to start says so into a void and the
+    // button just looks inert.
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err !== "") console.warn("omawall: zenity: " + err)
+      }
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var picked = String(text || "").trim()
-        if (picked !== "") root.persist("folder", picked)
+        if (picked === "") return
+        root.folderEdited = false
+        root.persist("folder", picked)
       }
     }
   }
@@ -197,7 +228,17 @@ Panel {
     }
   }
 
+  // True only while the user has typed something not yet committed. Guards the
+  // field's write-back so it can never resurrect a stale path.
+  property bool folderEdited: false
+
+  // The setting changes from more places than this field: the file dialog, the
+  // CLI, or this same panel on another monitor. Mirror it back unless the user
+  // is part-way through typing something else.
+  onFolderChanged: if (!folderEdited && folderField) folderField.text = folder
+
   onOpenedChanged: if (opened) {
+    folderEdited = false
     folderField.text = root.folder
     refreshStatus()
     if (!matugenProbe.running) matugenProbe.running = true
@@ -281,8 +322,22 @@ Panel {
             width: parent.width - browseButton.implicitWidth - parent.spacing
             foreground: root.fg
             placeholderText: "~/Pictures/wallpapers"
-            onAccepted: root.persist("folder", text.trim())
-            onEditingFinished: if (text.trim() !== root.folder) root.persist("folder", text.trim())
+            // Only a keystroke counts as an edit. Assigning text from the
+            // setting below must not arm the write-back.
+            onTextChanged: if (activeFocus) root.folderEdited = true
+            onAccepted: {
+              root.folderEdited = false
+              root.persist("folder", text.trim())
+            }
+            // editingFinished fires on any focus loss, including the panel
+            // being dismissed because the file dialog took focus. Writing back
+            // unconditionally there is what made Browse… look broken: the field
+            // still held the old path and overwrote the one just chosen.
+            onEditingFinished: {
+              if (!root.folderEdited) return
+              root.folderEdited = false
+              if (text.trim() !== root.folder) root.persist("folder", text.trim())
+            }
           }
 
           Button {
@@ -349,6 +404,18 @@ Panel {
           foreground: root.fg
           fontFamily: root.fontFamily
           onModified: function(v) { root.persist("intervalSec", v) }
+        }
+
+        Toggle {
+          width: parent.width
+          // Kept short deliberately: the Toggle label elides rather than wraps,
+          // and the longer wording was cut off mid-word at panel width.
+          label: "Shuffle on unlock or wake"
+          description: "Change wallpaper on unlock or screensaver exit rather than on a timer."
+          checked: root.shuffleOnWake
+          foreground: root.fg
+          fontFamily: root.fontFamily
+          onClicked: root.persist("shuffleOnWake", !root.shuffleOnWake)
         }
 
         PanelSeparator {}
