@@ -99,6 +99,27 @@ Item {
   function poolKeyFolder(key) { try { return JSON.parse(key)[0] } catch (e) { return "" } }
   function poolKeyRecursive(key) { try { return JSON.parse(key)[1] === true } catch (e) { return true } }
 
+  // ------------------------------------------------------------------ scaling
+  //
+  // Only "zoom" maps onto a QML fillMode. Fitting a single axis needs the
+  // image's natural size, so the other three are resolved to an explicit size
+  // here and drawn with fillMode Stretch -- exact dimensions, aspect already
+  // correct. Before the image has loaded its natural size reads as 0, so the
+  // box is returned and the picture simply fills until it knows better.
+  function scaledW(mode, natW, natH, boxW, boxH) {
+    if (natW <= 0 || natH <= 0) return boxW
+    if (mode === "actual") return natW
+    if (mode === "fitHeight") return natW * (boxH / natH)
+    return boxW
+  }
+
+  function scaledH(mode, natW, natH, boxW, boxH) {
+    if (natW <= 0 || natH <= 0) return boxH
+    if (mode === "actual") return natH
+    if (mode === "fitWidth") return natH * (boxW / natW)
+    return boxH
+  }
+
   function distinctPoolKeys() {
     var names = screenNames()
     var seen = ({})
@@ -1018,6 +1039,7 @@ Item {
       readonly property string dispPath: root.displayedMap[screenKey] || ""
       readonly property string incPath: root.incomingMap[screenKey] || ""
       readonly property string oldPath: root.oldMap[screenKey] || ""
+      readonly property string scaling: root.configFor(screenKey).scaling
 
       screen: modelData
       visible: !remapGuard.remapping
@@ -1027,7 +1049,10 @@ Item {
         id: remapGuard
         window: panel
       }
-      color: "transparent"
+      // Zoom covers the screen, so it keeps the transparency it always had.
+      // The fitting modes deliberately do not cover it, and the bars they
+      // leave should read as part of the theme rather than as a hole.
+      color: panel.scaling === "zoom" ? "transparent" : Color.background
       // Keep render updates enabled. The background layer has been observed to
       // lose its committed buffer while parked with updatesEnabled=false,
       // leaving a black desktop until omarchy-shell is restarted.
@@ -1049,13 +1074,21 @@ Item {
       WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
       exclusionMode: ExclusionMode.Ignore
 
+      // Centred with an explicit size rather than anchored to fill: three of
+      // the four scaling modes need a size the box cannot express. Anything
+      // larger than the screen is cropped by the layer surface, which is what
+      // "zoom" and an oversized "actual" both want.
       Image {
         id: base
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: root.scaledW(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
+        height: root.scaledH(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
         source: root.imageUrl(panel.dispPath)
-        fillMode: Image.PreserveAspectCrop
+        fillMode: panel.scaling === "zoom" ? Image.PreserveAspectCrop : Image.Stretch
         asynchronous: true
         cache: true
+        smooth: true
+        mipmap: true
         onStatusChanged: {
           if (status === Image.Ready) root.noteBaseReady(panel.screenKey)
           else if (status === Image.Error) root.noteBadImage(panel.dispPath)
@@ -1064,9 +1097,11 @@ Item {
 
       Image {
         id: oldFrame
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: root.scaledW(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
+        height: root.scaledH(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
         source: root.imageUrl(panel.oldPath)
-        fillMode: Image.PreserveAspectCrop
+        fillMode: panel.scaling === "zoom" ? Image.PreserveAspectCrop : Image.Stretch
         asynchronous: true
         cache: false
         smooth: true
@@ -1089,9 +1124,11 @@ Item {
 
         Image {
           id: incomingFrame
-          anchors.fill: parent
+          anchors.centerIn: parent
+          width: root.scaledW(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
+          height: root.scaledH(panel.scaling, implicitWidth, implicitHeight, parent.width, parent.height)
           source: root.imageUrl(panel.incPath)
-          fillMode: Image.PreserveAspectCrop
+          fillMode: panel.scaling === "zoom" ? Image.PreserveAspectCrop : Image.Stretch
           asynchronous: true
           cache: false
           smooth: true
