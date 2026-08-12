@@ -220,8 +220,77 @@ Panel {
 
   property int poolSize: -1
   property var screenPicks: ({})
+  property var nextPicks: ({})
 
   property int skipped: 0
+
+  // Read back from the registry that loaded us rather than kept as a copy
+  // here, so the tooltip cannot claim a version we are not running.
+  readonly property string version: {
+    try {
+      return String(bar.shell.pluginRegistry.installedPlugins[moduleName].version || "")
+    } catch (e) {
+      return ""
+    }
+  }
+
+  // Which display keys are in play. Before the service has reported its
+  // outputs -- and whenever displays share one configuration -- that is the
+  // single "all" entry.
+  function displayKeysInUse() {
+    if (!perDisplayConfig || !displays.length) return ["all"]
+    var out = []
+    for (var i = 0; i < displays.length; i++) out.push(String(displays[i]))
+    return out
+  }
+
+  // Whether there is a next image to fetch at all. A display in single mode
+  // keeps its pinned image, so with every display pinned -- or with no folder
+  // set -- the button would do nothing and is hidden instead.
+  readonly property bool canAdvance: {
+    var keys = displayKeysInUse()
+    for (var i = 0; i < keys.length; i++) {
+      var c = configFor(keys[i])
+      if (c.mode === "shuffle" && String(c.folder).trim() !== "") return true
+    }
+    return false
+  }
+
+  readonly property bool anyFolderSet: {
+    var keys = displayKeysInUse()
+    for (var i = 0; i < keys.length; i++)
+      if (String(configFor(keys[i]).folder).trim() !== "") return true
+    return false
+  }
+
+  // Sorted, because the service reports its outputs in whatever order
+  // Quickshell hands them over and a card that reorders itself between
+  // restarts is hard to read.
+  readonly property var nextEntries: {
+    var names = []
+    for (var n in nextPicks) names.push(n)
+    names.sort()
+    var out = []
+    for (var i = 0; i < names.length; i++) {
+      var p = String(nextPicks[names[i]] || "")
+      if (p === "") continue
+      out.push({ screen: names[i], path: p, file: p.substring(p.lastIndexOf("/") + 1) })
+    }
+    return out
+  }
+
+  readonly property string previewTitle: "omawall" + (version === "" ? "" : " v" + version)
+
+  // Only when there is nothing to list; otherwise the images speak for
+  // themselves.
+  readonly property string previewNote: {
+    if (!canAdvance)
+      return anyFolderSet
+        ? "Every display is pinned to one image."
+        : "Using the current theme's backgrounds."
+    if (!nextEntries.length) return "No images to deal yet."
+    return ""
+  }
 
   readonly property string statusLine: {
     if (current.folder === "") return "No folder set — using the current theme's backgrounds."
@@ -267,9 +336,12 @@ Panel {
 
   // ------------------------------------------------------------------ status
 
-  function refreshStatus() {
+  // quiet leaves poolSize alone: the hover refresh below runs behind an open
+  // panel, and resetting it there would flash "Scanning…" over a count that
+  // was already correct.
+  function refreshStatus(quiet) {
     if (statusProc.running) return
-    root.poolSize = -1
+    if (quiet !== true) root.poolSize = -1
     statusProc.running = true
   }
 
@@ -292,6 +364,7 @@ Panel {
         root.poolSize = Number(data.poolSize)
         root.skipped = Number(data.skipped || 0)
         root.screenPicks = data.screens || ({})
+        root.nextPicks = data.next || ({})
         root.displays = Array.isArray(data.displays) ? data.displays : []
         root.resolvedPrimary = String(data.primaryDisplay || "")
       }
@@ -362,10 +435,14 @@ Panel {
 
   // Quickshell.execDetached with an argv array, NOT Util.execDetached: that
   // helper takes a command *string* and wraps it in `bash -lc`, so an array
-  // silently stringifies to "omarchy-shell,-q,background,shuffle" and the
-  // button does nothing.
-  function shuffleNow() {
-    Quickshell.execDetached(["omarchy-shell", "-q", "background", "shuffle"])
+  // silently stringifies to "omarchy-shell,-q,background,next" and the button
+  // does nothing.
+  //
+  // "next", not "shuffle": the pool is dealt from a queue that only reshuffles
+  // once it empties, so this hands out the following image rather than
+  // re-randomising what is left. It is a no-op when nothing shuffles.
+  function nextImage() {
+    Quickshell.execDetached(["omarchy-shell", "-q", "background", "next"])
     refreshTimer.restart()
   }
 
@@ -419,7 +496,8 @@ Panel {
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function shuffle(): string { root.shuffleNow(); return "ok" }
+    function next(): string { root.nextImage(); return "ok" }
+    function shuffle(): string { root.nextImage(); return "ok" }
   }
 
   BarIconButton {
@@ -427,11 +505,209 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "󰸉"
-    tooltipText: root.current.folder === "" ? "Wallpapers" : "Wallpapers — " + root.current.folder
+    // No tooltipText: the bar's tooltip is a single line of text, and the card
+    // below shows the images instead.
     active: root.opened
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.MiddleButton) root.shuffleNow()
+      if (buttonCode === Qt.MiddleButton) root.nextImage()
       else root.toggle()
+    }
+  }
+
+  // ------------------------------------------------------------ hover preview
+  //
+  // A card of our own rather than the bar's tooltip, which takes text and
+  // nothing else. Being our own popup also keeps it out of the bar's popout
+  // coordinator, which closes whatever panel is open when a new one is
+  // requested -- fine for a click, wrong for a pointer merely crossing an icon.
+  property bool previewShown: false
+
+  Timer {
+    id: previewDelay
+    interval: 400
+    repeat: false
+    onTriggered: root.previewShown = button.tooltipHovered && !root.opened
+  }
+
+  Connections {
+    target: button
+    function onTooltipHoveredChanged() {
+      if (!button.tooltipHovered) {
+        previewDelay.stop()
+        root.previewShown = false
+        return
+      }
+      // The images go stale as soon as anything shuffles; the reply lands well
+      // inside the delay below.
+      root.refreshStatus(true)
+      previewDelay.restart()
+    }
+  }
+
+  PopupWindow {
+    id: preview
+
+    readonly property var anchorWindow: button.QsWindow ? button.QsWindow.window : null
+    readonly property int gap: Style.space(6)
+    readonly property string barPosition: root.bar ? root.bar.position : "top"
+
+    visible: root.previewShown && !!anchorWindow
+    color: "transparent"
+    implicitWidth: Math.ceil(previewCard.implicitWidth)
+    implicitHeight: Math.ceil(previewCard.implicitHeight)
+
+    // The placement the bar gives its own tooltip: off the bar's inner edge,
+    // centred on the icon, slid back inside the screen rather than hanging
+    // over an edge.
+    anchor {
+      id: previewAnchor
+      window: preview.anchorWindow
+      adjustment: PopupAdjustment.Slide
+      edges: Edges.Top | Edges.Left
+      gravity: Edges.Bottom | Edges.Right
+      rect.width: 1
+      rect.height: 1
+
+      onAnchoring: {
+        var window = preview.anchorWindow
+        if (!window) return
+
+        var w = preview.implicitWidth
+        var h = preview.implicitHeight
+        var localX = button.width / 2 - w / 2
+        var localY = button.height + preview.gap
+
+        if (preview.barPosition === "bottom") {
+          localY = -h - preview.gap
+        } else if (preview.barPosition === "left") {
+          localX = button.width + preview.gap
+          localY = button.height / 2 - h / 2
+        } else if (preview.barPosition === "right") {
+          localX = -w - preview.gap
+          localY = button.height / 2 - h / 2
+        }
+
+        var point = window.contentItem.mapFromItem(button, localX, localY)
+        if (preview.barPosition === "top" || preview.barPosition === "bottom")
+          point.x = Math.max(preview.gap, Math.min(point.x, window.width - w - preview.gap))
+        else
+          point.y = Math.max(preview.gap, Math.min(point.y, window.height - h - preview.gap))
+
+        previewAnchor.rect.x = Math.round(point.x)
+        previewAnchor.rect.y = Math.round(point.y)
+      }
+    }
+
+    BorderSurface {
+      id: previewCard
+
+      readonly property color text: Color.tooltip.text
+      readonly property color dim: Qt.darker(Color.tooltip.text, 1.5)
+
+      implicitWidth: previewColumn.width + contentLeftInset + contentRightInset
+      implicitHeight: previewColumn.implicitHeight + contentTopInset + contentBottomInset
+      padding: Style.space(10)
+      color: Color.tooltip.background
+      borderSpec: Border.surfaceSpec("tooltip", "border", Color.tooltip.border, 1)
+      radius: Style.cornerRadius
+
+      Column {
+        id: previewColumn
+        x: previewCard.contentLeftInset
+        y: previewCard.contentTopInset
+        width: Style.space(250)
+        spacing: Style.space(8)
+
+        Text {
+          text: root.previewTitle
+          color: previewCard.text
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
+
+        Text {
+          visible: root.previewNote !== ""
+          width: parent.width
+          text: root.previewNote
+          color: previewCard.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
+        Text {
+          visible: root.nextEntries.length > 0
+          text: "Next Images"
+          color: previewCard.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Repeater {
+          model: root.nextEntries
+
+          Row {
+            id: entry
+            required property var modelData
+            width: previewColumn.width
+            spacing: Style.space(8)
+
+            // Decoded at thumbnail size, not full resolution: a 4K wallpaper
+            // decoded to fill 90 pixels would cost tens of megabytes to draw
+            // something the size of a postage stamp.
+            Rectangle {
+              width: Style.space(90)
+              height: Math.round(width * 9 / 16)
+              color: "transparent"
+              clip: true
+
+              Image {
+                anchors.fill: parent
+                source: Util.fileUrl(entry.modelData.path)
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                sourceSize.width: 240
+              }
+            }
+
+            Column {
+              width: previewColumn.width - Style.space(98)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Text {
+                width: parent.width
+                text: entry.modelData.screen
+                color: previewCard.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              Text {
+                width: parent.width
+                text: entry.modelData.file
+                color: previewCard.text
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideMiddle
+              }
+            }
+          }
+        }
+
+        Text {
+          visible: root.canAdvance
+          width: parent.width
+          text: "middle click to change to next image"
+          color: previewCard.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+      }
     }
   }
 
@@ -460,7 +736,7 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
-        if (t === "s" || t === "S") root.shuffleNow()
+        if (t === "n" || t === "N") root.nextImage()
         else if (t === "r" || t === "R") root.rescanNow()
         else if (t === "b" || t === "B") root.browse()
         else if (t === "t" || t === "T") root.generateThemeNow()
@@ -819,12 +1095,16 @@ Panel {
           width: parent.width
           spacing: Style.space(8)
 
+          // Hidden rather than disabled when every display is pinned: there is
+          // no next image to fetch, and a greyed button invites a click that
+          // was never going to do anything.
           Button {
-            text: "Shuffle now"
+            visible: root.canAdvance
+            text: "Next image"
             bordered: true
             foreground: root.fg
             fontFamily: root.fontFamily
-            onClicked: root.shuffleNow()
+            onClicked: root.nextImage()
           }
 
           Button {

@@ -167,6 +167,18 @@ Item {
     return false
   }
 
+  // True when at least one display would actually change. A display in single
+  // mode keeps its pinned image, so on an all-single desktop there is no next
+  // image to fetch and the bar hides the button rather than offering a no-op.
+  function hasShuffling() {
+    var names = screenNames()
+    for (var i = 0; i < names.length; i++) {
+      var c = configFor(names[i])
+      if (c.mode === "shuffle" && c.folder !== "") return true
+    }
+    return false
+  }
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
@@ -441,6 +453,52 @@ Item {
     return out
   }
 
+  // Refill a queue that has just run dry rather than waiting for the next deal
+  // to need it. The same refill happens either way and the deal order is
+  // unchanged; doing it now means the head of the next pass is decided ahead
+  // of time, which is what lets the bar say which image each display is about
+  // to get.
+  function topUpQueues(picks) {
+    var avoid = []
+    for (var n in picks) {
+      var p = String(picks[n] || "")
+      if (p && avoid.indexOf(p) === -1) avoid.push(p)
+    }
+    var keys = distinctPoolKeys()
+    for (var i = 0; i < keys.length; i++) {
+      if ((dealQueues[keys[i]] || []).length) continue
+      refillQueue(keys[i], avoid)
+    }
+  }
+
+  // What the next advance would put on each shuffling display, peeked rather
+  // than dealt. The grouping mirrors pickForScreens, and the queues are topped
+  // up after every deal, so these heads are the images that call will hand out
+  // rather than a guess at them.
+  function nextPicks() {
+    var names = screenNames()
+    var out = ({})
+    var groups = ({})
+    var order = []
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i]
+      if (configFor(name).mode !== "shuffle") continue
+      var key = poolKeyFor(name)
+      if (key === "") continue
+      if (!groups[key]) { groups[key] = []; order.push(key) }
+      groups[key].push(name)
+    }
+
+    for (var g = 0; g < order.length; g++) {
+      var members = groups[order[g]]
+      var queue = dealQueues[order[g]] || []
+      if (!queue.length) continue
+      for (var m = 0; m < members.length; m++)
+        out[members[m]] = String(perDisplay ? queue[m % queue.length] : queue[0])
+    }
+    return out
+  }
+
   function dropFromQueue(path) {
     var next = ({})
     for (var k in dealQueues) {
@@ -514,7 +572,16 @@ Item {
     if (empty) return
     applyPerScreen(picks, instant === true)
     syncCurrentLink(picks)
+    topUpQueues(picks)
     if (autoTheme) requestTheme(primaryPick(picks))
+  }
+
+  // The user-facing "next image". Distinct from shuffle(), which is also how a
+  // pinned image and a freshly scanned folder are applied and so must still run
+  // when nothing is set to shuffle.
+  function advance() {
+    if (!hasShuffling()) return
+    shuffle(false)
   }
 
   function primaryPick(picks) {
@@ -563,8 +630,9 @@ Item {
       // costs the pass one position rather than reaching outside the rotation.
       var chosen = ""
       var drawn = ""
+      var key = poolKeyFor(affected[j])
       for (var attempt = 0; attempt < 8; attempt++) {
-        drawn = dealNext(1, path)[0] || ""
+        drawn = dealNext(key, 1, path)[0] || ""
         if (!drawn) break
         if (!perDisplay || !inUse[drawn]) { chosen = drawn; break }
       }
@@ -579,6 +647,7 @@ Item {
     // removes one path from the pool, so the retries are bounded by its size.
     applyPerScreen(picks, true)
     syncCurrentLink(picks)
+    topUpQueues(picks)
     if (autoTheme) requestTheme(primaryPick(picks))
   }
 
@@ -901,11 +970,20 @@ Item {
       root.transitionBackgroundWithTheme(fromPath, path, finalPath, colorsB64, shellB64)
     }
 
-    // Added by this clone.
-    function shuffle(): string {
+    // Added by this clone. The queue is only reshuffled once it empties, so
+    // this deals the following image rather than re-randomising anything --
+    // hence "next".
+    function next(): string {
       if (!root.hasFolder()) return "no folder configured"
-      root.shuffle(false)
+      if (!root.hasShuffling()) return "no display is set to shuffle"
+      root.advance()
       return "ok"
+    }
+
+    // The older name for the same thing, kept because it is in people's key
+    // binds.
+    function shuffle(): string {
+      return next()
     }
 
     function rescan(): string {
@@ -934,6 +1012,9 @@ Item {
         skipped: Object.keys(root.badImages).length,
         queued: (root.dealQueues[root.poolKeyFor(root.primaryScreenName())] || []).length,
         screens: root.displayedMap,
+        // What each shuffling display would get next, for the bar's tooltip.
+        next: root.nextPicks(),
+        shuffling: root.hasShuffling(),
         shuffleOnWake: root.shuffleOnWake,
         // Whether the lock and idle services were found. Without them the wake
         // shuffle silently never fires, which is otherwise indistinguishable

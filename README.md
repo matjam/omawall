@@ -24,7 +24,8 @@ desktop theme can follow along.
 - **Recursive scan** of `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp`.
 - **Skips files it can't decode** and re-deals that display.
 - **Theme from wallpaper** — recolors everything Omarchy themes. Needs matugen.
-- **Bar widget** for all of it. Middle-click the icon to shuffle.
+- **Bar widget** for all of it. Middle-click the icon for the next image;
+  hover it to see thumbnails of what each display is about to get.
 
 With no folder set it behaves like the built-in background service, so you can
 install it and decide later.
@@ -93,17 +94,28 @@ The four scaling modes only differ when the image and the screen disagree
 about shape. A 3440×1440 wallpaper on a 3440×1440 screen looks identical under
 Zoom, Fit ↕ and Actual, because it is.
 
-Keys while the panel is open: `s` shuffle · `r` rescan · `b` browse ·
+### Next image
+
+The pool is dealt from a shuffled queue that only reshuffles once it empties,
+so there is always a next image waiting rather than a fresh roll of the dice.
+**Next image** hands it out — to every display set to Shuffle, leaving the
+pinned ones alone. With every display pinned there is no next image and the
+button is not shown.
+
+Middle-click the bar icon for the same thing. Hovering it shows a thumbnail of
+what each display is about to get.
+
+Keys while the panel is open: `n` next image · `r` rescan · `b` browse ·
 `t` generate theme
 
 ```bash
-omarchy-shell background shuffle        # reshuffle now
+omarchy-shell background next           # next image (shuffle is an alias)
 omarchy-shell background generateTheme  # rebuild the theme
 omarchy-shell background rescan         # re-read the folder
 omarchy-shell background status         # JSON state
 
 # hyprland bind
-bind = SUPER SHIFT, W, exec, omarchy-shell -q background shuffle
+bind = SUPER SHIFT, W, exec, omarchy-shell -q background next
 ```
 
 ## Theme from wallpaper
