@@ -54,6 +54,17 @@ Item {
   readonly property bool perDisplayConfig: setting("perDisplayConfig", false) === true
   readonly property var displayConfig: setting("displayConfig", null)
 
+  // What the rebuild below actually watches.
+  //
+  // `settings` is read out of shell.shellConfig, and the shell replaces that
+  // whole object on every write to shell.json -- by any plugin, about any
+  // setting. `displayConfig` therefore arrives as a new object with identical
+  // contents whenever some other widget saves a checkbox, and QML compares var
+  // properties by reference: it cannot tell that nothing changed. Watching the
+  // serialised form can, which is the difference between a rescan when the
+  // folder is edited and a rescan every time anything anywhere is edited.
+  readonly property string displayConfigKey: JSON.stringify(displayConfig)
+
   readonly property var defaultDisplayConfig: ({
     folder: "", recursive: true, mode: "shuffle", pinned: "", scaling: "zoom"
   })
@@ -1079,7 +1090,7 @@ Item {
   // Anything that changes which images belong in which pool. Debounced into
   // one rebuild: editing a folder field emits a change per keystroke, and a
   // single panel action can write several keys in a row.
-  onDisplayConfigChanged: configReload.restart()
+  onDisplayConfigKeyChanged: configReload.restart()
   onPerDisplayConfigChanged: configReload.restart()
   onFolderChanged: configReload.restart()
   onPerDisplayChanged: if (hasFolder()) shuffle(false)
