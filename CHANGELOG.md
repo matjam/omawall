@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/matjam/omawall/compare/v1.2.0...v1.3.0) (2026-08-12)
+
+
+### Features
+
+* next image, and a hover card showing what is coming ([7bd5748](https://github.com/matjam/omawall/commit/7bd5748c26da15f0a29ee4b05e81c1835a2cbb03))
+
 ## [1.2.0](https://github.com/matjam/omawall/compare/v1.1.0...v1.2.0) (2026-08-11)
 
 
