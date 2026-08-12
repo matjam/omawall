@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/matjam/omawall/compare/v1.3.0...v1.4.0) (2026-08-12)
+
+
+### Bug Fixes
+
+* stop reshuffling when another plugin saves a setting ([39002d2](https://github.com/matjam/omawall/commit/39002d29f849c1a90443f62f79e6cd9fb97c7ebf))
+
 ## [1.3.0](https://github.com/matjam/omawall/compare/v1.2.0...v1.3.0) (2026-08-12)
 
 
