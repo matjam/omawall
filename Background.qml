@@ -35,7 +35,7 @@ Item {
   // ------------------------------------------------------------- settings
 
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omawall"
-  readonly property var settings: lookupSettings(shell ? shell.shellConfig : null, pluginId)
+  readonly property var settings: lookupSettings(shell ? (shell.shellConfig || { bar: shell.barConfig }) : null, pluginId)
 
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
@@ -56,8 +56,8 @@ Item {
 
   // What the rebuild below actually watches.
   //
-  // `settings` is read out of shell.shellConfig, and the shell replaces that
-  // whole object on every write to shell.json -- by any plugin, about any
+  // `settings` is read from the shell's configuration snapshot, replaced
+  // on every write to shell.json -- by any plugin, about any
   // setting. `displayConfig` therefore arrives as a new object with identical
   // contents whenever some other widget saves a checkbox, and QML compares var
   // properties by reference: it cannot tell that nothing changed. Watching the
@@ -153,8 +153,8 @@ Item {
   readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
   readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
 
-  // Stamped in by PluginRegistry; the generator script ships beside this file.
-  readonly property string sourceDir: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
+  // Public manifests omit __sourceDir; resolve bundled files from this QML URL.
+  readonly property string sourceDir: decodeURIComponent(String(Qt.resolvedUrl("."))).replace(/^file:\/\//, "").replace(/\/$/, "")
   // For the paths that still speak of a single folder -- the status IPC and
   // the bar tooltip. The primary display's is the one a single-folder setup
   // has anyway.
@@ -199,6 +199,8 @@ Item {
   // can live in either bar.layout.* (where the settings panel writes it, via
   // setBarWidget) or plugins[] (where the clone originally enabled it). The
   // bar entry wins so the panel's edits are what take effect.
+  // Scoped shell APIs expose barConfig; older shells also expose shellConfig
+  // with top-level plugin entries. Both use the same lookup and precedence.
   function lookupSettings(config, id) {
     if (!config || !id) return ({})
     var sections = ["left", "center", "right"]
