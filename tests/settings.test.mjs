@@ -3,41 +3,56 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { test } from 'node:test';
 
-const source = readFileSync(new URL('../Background.qml', import.meta.url), 'utf8');
-const lookup = source.match(/  function lookupSettings\(config, id\) \{[\s\S]*?\n  \}/)[0];
-const binding = source.match(/readonly property var settings: (.*)/)[1];
+function qmlFunction(file, name) {
+  const source = readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+  const declaration = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'));
+  assert.ok(declaration, file + ' defines ' + name);
+  return vm.runInNewContext(declaration[0] + '\n' + name);
+}
+
+const lookupSettings = qmlFunction('ShellSettings.qml', 'lookupSettings');
+const fromUrl = qmlFunction('LocalPath.qml', 'fromUrl');
+const versionFor = qmlFunction('ServiceVersion.qml', 'versionFor');
 const id = 'matjam.omawall';
 const entry = { id, folder: '/wallpapers', autoTheme: true };
 
-function settings(shell) {
-  return vm.runInNewContext(`${lookup}\n${binding}`, { shell, pluginId: id });
+for (const section of ['left', 'center', 'right']) {
+  test('reads wallpaper settings from the ' + section + ' bar section', () => {
+    const settings = lookupSettings({ bar: { layout: { [section]: [entry] } } }, id);
+    assert.equal(settings.folder, '/wallpapers');
+    assert.equal(settings.autoTheme, true);
+  });
 }
 
-test('reads the wallpaper folder from the current scoped shell API', () => {
-  const shell = { barConfig: { layout: { right: [entry] } } };
-  assert.equal(settings(shell).folder, '/wallpapers');
-  assert.equal(settings(shell).autoTheme, true);
-  shell.barConfig = { layout: { left: [{ id, folder: '/new-folder' }] } };
-  assert.equal(settings(shell).folder, '/new-folder');
+test('reads service-only settings and preserves bar precedence', () => {
+  const service = { id, folder: '/service-only' };
+  assert.equal(lookupSettings({ plugins: [service] }, id).folder, '/service-only');
+  assert.equal(lookupSettings({
+    bar: { layout: { center: [entry] } }, plugins: [service],
+  }, id).folder, '/wallpapers');
 });
 
-test('retains older shell settings and bar precedence', () => {
-  const legacy = { id, folder: '/legacy' };
-  assert.equal(settings({ shellConfig: { plugins: [legacy] } }).folder, '/legacy');
-  assert.equal(settings({ shellConfig: {
-    bar: { layout: { center: [entry] } }, plugins: [legacy],
-  } }).folder, '/wallpapers');
+test('resolves settings again after a configuration replacement', () => {
+  assert.equal(lookupSettings({ plugins: [entry] }, id).folder, '/wallpapers');
+  assert.equal(lookupSettings({ plugins: [{ id, folder: '/new-folder' }] }, id).folder, '/new-folder');
+  assert.equal(lookupSettings({ plugins: [] }, id), null);
 });
 
-test('handles startup before the shell is injected', () => {
-  assert.equal(settings(null).folder, undefined);
+test('handles missing configuration and ignores other plugins', () => {
+  assert.equal(lookupSettings(null, id), null);
+  assert.equal(lookupSettings({ plugins: [{ id: 'another.plugin' }] }, id), null);
 });
 
-test('finds bundled scripts without private manifest fields', () => {
-  const expression = source.match(/readonly property string sourceDir: (.*)/)[1];
-  const path = vm.runInNewContext(expression, {
-    manifest: { id },
-    Qt: { resolvedUrl: () => 'file:///plugins/my%20wallpapers/' },
-  });
-  assert.equal(path, '/plugins/my wallpapers');
+test('decodes bundled local paths without private manifest fields', () => {
+  assert.equal(fromUrl('file:///plugins/my%20wallpapers/bin/tool%25%23'), '/plugins/my wallpapers/bin/tool%#');
+  assert.equal(fromUrl('https://example.test/a%20b'), 'https://example.test/a%20b');
+});
+
+test('reads the version through the public service API', () => {
+  assert.equal(versionFor(null, id), '');
+  assert.equal(versionFor({ serviceFor: () => null }, id), '');
+  assert.equal(versionFor({ serviceFor(requested) {
+    assert.equal(requested, id);
+    return { manifest: { version: '1.4.0' } };
+  } }, id), '1.4.0');
 });

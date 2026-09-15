@@ -35,7 +35,12 @@ Item {
   // ------------------------------------------------------------- settings
 
   readonly property string pluginId: (manifest && manifest.id) || "matjam.omawall"
-  readonly property var settings: lookupSettings(shell ? (shell.shellConfig || { bar: shell.barConfig }) : null, pluginId)
+  readonly property var settings: shellSettings.settings
+
+  ShellSettings {
+    id: shellSettings
+    pluginId: root.pluginId
+  }
 
   readonly property bool perDisplay: setting("perDisplay", true) === true
   readonly property int intervalSec: Math.max(0, Number(setting("intervalSec", 0)) || 0)
@@ -56,8 +61,8 @@ Item {
 
   // What the rebuild below actually watches.
   //
-  // `settings` is read from the shell's configuration snapshot, replaced
-  // on every write to shell.json -- by any plugin, about any
+  // `settings` is read out of shell.json, and the shell replaces that whole
+  // object on every write -- by any plugin, about any
   // setting. `displayConfig` therefore arrives as a new object with identical
   // contents whenever some other widget saves a checkbox, and QML compares var
   // properties by reference: it cannot tell that nothing changed. Watching the
@@ -153,8 +158,11 @@ Item {
   readonly property string primaryDisplay: String(setting("primaryDisplay", "")).trim()
   readonly property string themeMode: String(setting("themeMode", "dark")) === "light" ? "light" : "dark"
 
-  // Public manifests omit __sourceDir; resolve bundled files from this QML URL.
-  readonly property string sourceDir: decodeURIComponent(String(Qt.resolvedUrl("."))).replace(/^file:\/\//, "").replace(/\/$/, "")
+  LocalPath {
+    id: localPath
+  }
+
+  readonly property string themeGenerator: localPath.fromUrl(Qt.resolvedUrl("bin/omawall-generate-theme"))
   // For the paths that still speak of a single folder -- the status IPC and
   // the bar tooltip. The primary display's is the one a single-folder setup
   // has anyway.
@@ -193,32 +201,6 @@ Item {
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
-  }
-
-  // This plugin owns both a service and a bar widget, so its shell.json entry
-  // can live in either bar.layout.* (where the settings panel writes it, via
-  // setBarWidget) or plugins[] (where the clone originally enabled it). The
-  // bar entry wins so the panel's edits are what take effect.
-  // Scoped shell APIs expose barConfig; older shells also expose shellConfig
-  // with top-level plugin entries. Both use the same lookup and precedence.
-  function lookupSettings(config, id) {
-    if (!config || !id) return ({})
-    var sections = ["left", "center", "right"]
-    if (config.bar && config.bar.layout) {
-      for (var s = 0; s < sections.length; s++) {
-        var list = config.bar.layout[sections[s]]
-        if (!Array.isArray(list)) continue
-        for (var i = 0; i < list.length; i++) {
-          if (list[i] && String(list[i].id) === id) return list[i]
-        }
-      }
-    }
-    if (Array.isArray(config.plugins)) {
-      for (var j = 0; j < config.plugins.length; j++) {
-        if (config.plugins[j] && String(config.plugins[j].id) === id) return config.plugins[j]
-      }
-    }
-    return ({})
   }
 
   function expandHome(path) {
@@ -707,14 +689,14 @@ Item {
 
   function runThemeGeneration(force) {
     var image = pendingThemeImage || currentPrimaryImage()
-    if (!image || !sourceDir) return
+    if (!image) return
     if (!force && image === themedFrom) return
     // matugen plus the theme hooks take about a second. Re-arming instead of
     // queueing means a burst of shuffles ends in one run against the latest
     // image rather than a backlog of runs against stale ones.
     if (themeProc.running) { themeDebounce.restart(); return }
     themedFrom = image
-    themeProc.command = [sourceDir + "/bin/omawall-generate-theme",
+    themeProc.command = [themeGenerator,
       "--image", image, "--mode", themeMode]
     themeProc.running = true
   }
@@ -1007,7 +989,6 @@ Item {
     // Deliberately not gated on autoTheme: this is the manual path, for a
     // one-off palette refresh with the automatic toggle left off.
     function generateTheme(): string {
-      if (!root.sourceDir) return "plugin source directory is unknown"
       var image = root.currentPrimaryImage()
       if (!image) return "no wallpaper is displayed yet"
       root.pendingThemeImage = image

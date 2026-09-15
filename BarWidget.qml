@@ -12,8 +12,8 @@ import qs.Ui
 // entries in bar.layout.*. Everything here writes through that IPC rather than
 // touching shell.json, so the shell stays the only writer.
 //
-// The service reads the same entry back out of shell.shellConfig, so a saved
-// change reaches the wallpaper without a restart.
+// The service reads the same entry from shell.json, so a saved change reaches
+// the wallpaper without a restart.
 Panel {
   id: root
   moduleName: "matjam.omawall"
@@ -223,16 +223,23 @@ Panel {
   property var nextPicks: ({})
 
   property int skipped: 0
+  readonly property string version: serviceVersion.version
+  readonly property string wakeDescription: wakeDetails.text
 
-  // Read back from the registry that loaded us rather than kept as a copy
-  // here, so the tooltip cannot claim a version we are not running.
-  readonly property string version: {
-    try {
-      return String(bar.shell.pluginRegistry.installedPlugins[moduleName].version || "")
-    } catch (e) {
-      return ""
-    }
+  ServiceVersion {
+    id: serviceVersion
+    shell: bar ? bar.shell : null
+    moduleName: root.moduleName
   }
+
+  WakeDescription {
+    id: wakeDetails
+    backgroundStatusParsed: root.backgroundStatusParsed
+    wakeSourcesReady: root.wakeSourcesReady
+  }
+
+  property bool backgroundStatusParsed: false
+  property bool wakeSourcesReady: true
 
   // Which display keys are in play. Before the service has reported its
   // outputs -- and whenever displays share one configuration -- that is the
@@ -367,6 +374,8 @@ Panel {
         root.nextPicks = data.next || ({})
         root.displays = Array.isArray(data.displays) ? data.displays : []
         root.resolvedPrimary = String(data.primaryDisplay || "")
+        root.wakeSourcesReady = data.wakeSourcesReady === true
+        root.backgroundStatusParsed = true
       }
     }
   }
@@ -1008,7 +1017,7 @@ Panel {
           Toggle {
             width: parent.width
             label: "Shuffle on unlock or wake"
-            description: "Change wallpaper on unlock or screensaver exit rather than on a timer."
+            description: root.wakeDescription
             checked: root.shuffleOnWake
             foreground: root.fg
             fontFamily: root.fontFamily
