@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.1](https://github.com/matjam/omawall/compare/v1.4.0...v1.4.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* integrate scoped shell compatibility improvements ([ff4144f](https://github.com/matjam/omawall/commit/ff4144f69798265affa24a499e032a434e4e3147))
+* restore wallpaper settings with scoped shell API ([759b81f](https://github.com/matjam/omawall/commit/759b81f33c425b61198cd08cca50855d5611f668))
+
 ## [1.4.0](https://github.com/matjam/omawall/compare/v1.3.0...v1.4.0) (2026-08-12)
 
 
