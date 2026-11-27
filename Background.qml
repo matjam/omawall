@@ -27,6 +27,7 @@ Item {
   // Injected by the shell's service loader (see shell.qml ensureService).
   property var shell: null
   property var manifest: null
+  property bool suspended: false
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string stateHome: home + "/.local/state"
@@ -941,7 +942,7 @@ Item {
     }
   }
 
-  IpcHandler {
+  ShellIpc {
     target: "background"
 
     function refresh(): void {
@@ -954,6 +955,10 @@ Item {
 
     function setInstant(path: string): void {
       root.setBackground(path, true)
+    }
+
+    function setSuspended(value: string): void {
+      root.suspended = value === "true"
     }
 
     function transition(fromPath: string, path: string): void {
@@ -1008,6 +1013,7 @@ Item {
         screens: root.displayedMap,
         // What each shuffling display would get next, for the bar's tooltip.
         next: root.nextPicks(),
+        suspended: root.suspended,
         shuffling: root.hasShuffling(),
         shuffleOnWake: root.shuffleOnWake,
         // Whether the lock and idle services were found. Without them the wake
@@ -1117,13 +1123,9 @@ Item {
       readonly property string scaling: root.configFor(screenKey).scaling
 
       screen: modelData
-      visible: !remapGuard.remapping
+      visible: !root.suspended
       anchors { top: true; bottom: true; left: true; right: true }
 
-      ScreenMoveRemap {
-        id: remapGuard
-        window: panel
-      }
       // Zoom covers the screen, so it keeps the transparency it always had.
       // The fitting modes deliberately do not cover it, and the bars they
       // leave should read as part of the theme rather than as a hole.
